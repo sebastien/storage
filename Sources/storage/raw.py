@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 08-Mar-2013
+# Last mod  : 10-Mar-2013
 # -----------------------------------------------------------------------------
 
 import uuid, types, weakref, threading
@@ -33,7 +33,7 @@ Allows to store raw data and its meta-information
 # -----------------------------------------------------------------------------
 
 # TODO: Raw should support variants (with different formats), each variant
-# should have one specific meta that overrides the whole thing
+# should have one specific meta that overoides the whole thing
 # Raw
 # - meta
 # - variants:
@@ -44,7 +44,7 @@ Allows to store raw data and its meta-information
 
 class StoredRaw(Storable):
 
-	RESERVED    = ("type", "timestamp", "rid")
+	RESERVED    = ("type", "timestamp", "oid")
 	COLLECTION  = None
 	STORAGE     = None
 
@@ -59,11 +59,11 @@ class StoredRaw(Storable):
 			assert isinstance(meta, cls), "Expected class %s, got %s" % (cls, properties.__class__)
 			return meta
 		else:
-			rid   = meta.get("rid")
+			oid   = meta.get("oid")
 			# If there is an object ID (and we're supposed to get it)
-			if rid:
+			if oid:
 				# We look in the storage for this specific object
-				obj = cls.Get(rid)
+				obj = cls.Get(oid)
 				# If it exists, we update its properties
 				if obj:
 					obj.meta(meta)
@@ -75,16 +75,23 @@ class StoredRaw(Storable):
 				return cls(data,  **(meta or {}))
 
 	@classmethod
-	def Has( cls, rid ):
+	def Has( cls, oid ):
 		assert cls.STORAGE, "Class has not been registered in an RawStorage yet: %s" % (cls)
-		if rid is None: return False
-		return cls.STORAGE.has(cls.StorageKey(rid))
+		if oid is None: return False
+		return cls.STORAGE.has(cls.StorageKey(oid))
 
 	@classmethod
-	def Get( cls, rid ):
+	def Get( cls, oid ):
 		assert cls.STORAGE, "Class has not been registered in an RawStorage yet: %s" % (cls)
-		if rid is None: return None
-		return cls.STORAGE.get(cls.StorageKey(rid))
+		if oid is None: return None
+		return cls.STORAGE.get(cls.StorageKey(oid))
+
+	@classmethod
+	def Ensure( cls, oid ):
+		res = cls.Get(oid)
+		if res is None:
+			res  = cls(oid=oid)
+		return res
 
 	@classmethod
 	def Count( cls ):
@@ -100,14 +107,14 @@ class StoredRaw(Storable):
 		return cls.List()
 
 	@classmethod
-	def StorageKey( cls, rid ):
-		"""Returns the storage key associated with the given rid of this class."""
-		if isinstance(rid, StoredRaw): rid = rid.rid
+	def StorageKey( cls, oid ):
+		"""Returns the storage key associated with the given oid of this class."""
+		if isinstance(oid, StoredRaw): oid = oid.oid
 		if cls.COLLECTION:
-			return cls.COLLECTION + "." + rid
+			return cls.COLLECTION + "." + oid
 		else:
 			cls.COLLECTION = cls.__name__.split(".")[-1]
-			return cls.StorageKey(rid)
+			return cls.StorageKey(oid)
 
 	@classmethod
 	def StoragePrefix( cls ):
@@ -120,8 +127,8 @@ class StoredRaw(Storable):
 	def __init__( self, data=None, restored=False, **meta ):
 		if meta.has_key("timestamp"): self.timestamp = meta["timestamp"]
 		else: self.timestamp = getTimestamp()
-		if meta.has_key("rid"): self.rid = meta["rid"]
-		else: self.rid       = StoredRaw.GenerateRID()
+		if meta.has_key("oid"): self.oid = meta["oid"]
+		else: self.oid       = StoredRaw.GenerateRID()
 		self._meta           = {}
 		self._hasDataChanged = True
 		self._data           = data
@@ -132,19 +139,10 @@ class StoredRaw(Storable):
 		if self.STORAGE: self.STORAGE.register(self, restored=restored)
 
 	def getID( self ):
-		return self.rid
+		return self.oid
 
 	def remove( self ):
 		self.STORAGE.remove(self)
-		return self
-
-	def addMeta( self, key, value=uuid ):
-		if value is uuid:
-			value = key
-			assert type(value) is dict, "Expected dict, got %s" % type(value)
-			for _ in value: self._meta[_] = value[_]
-		else:
-			self._meta[key] = value
 		return self
 
 	def setStorage( self, storage ):
@@ -157,8 +155,32 @@ class StoredRaw(Storable):
 	def hasDataChanged( self ):
 		return self._hasDataChanged
 
+	def setDataSaved( self ):
+		if type(self.data) is types.FileType:
+			# We force closing the file and put the data to None
+			try: self.data.close()
+			except: pass
+			self.data = None
+		self._hasDataChanged = False
+
+	def setData( self, data ):
+		self._data           = data
+		self._hasDataChanged = True
+		return self
+
+	def setMeta( self, meta=NOTHING, **options ):
+		if meta is not NOTHING:
+			assert type(meta) is dict, "StoredRaw.setMeta only accepts dict"
+			self._meta = meta
+		for k in options:
+			self._meta[k] = options[k]
+
+	def clearMeta( self ):
+		self.meta = {}
+
 	def meta( self, name=NOTHING, value=NOTHING, **options ):
 		"""Returns the meta data"""
+		# if NAME is not nothing and is dict, we should replace
 		if name is NOTHING:
 			if options:
 				for key in options:
@@ -180,12 +202,6 @@ class StoredRaw(Storable):
 				self._meta[name] = value
 				return self
 
-	def path( self ):
-		"""Returns the path of the data file."""
-		if self.STORAGE:
-			return self.STORAGE.path(self)
-		else:
-			return None
 
 	def data( self, size=None ):
 		"""Iterates through the data with chunks of the given size."""
@@ -195,32 +211,21 @@ class StoredRaw(Storable):
 			for _ in self.STORAGE.stream(self, size=None):
 				yield _
 
+	def path( self ):
+		"""Returns the path of the data file."""
+		if self.STORAGE:
+			return self.STORAGE.path(self)
+		else:
+			return None
+
 	def length( self ):
 		return len(self._data)
-
-	def setMeta( self, meta ):
-		assert not meta or type(meta) is dict
-		self._meta = meta
-		return self
-
-	def setData( self, data ):
-		self._data           = data
-		self._hasDataChanged = True
-		return self
-
-	def setDataSaved( self ):
-		if type(self.data) is types.FileType:
-			# We force closing the file and put the data to None
-			try: self.data.close()
-			except: pass
-			self.data = None
-		self._hasDataChanged = False
 
 	def export( self, **options ):
 		depth = 1
 		if "depth" in options: depth = options["depth"]
 		res = dict(
-			rid=self.rid,
+			oid=self.oid,
 			timestamp=self.timestamp,
 			type=getCanonicalName(self.__class__)
 		)
@@ -232,7 +237,7 @@ class StoredRaw(Storable):
 		self.STORAGE.update(self)
 
 	def __repr__( self ):
-		return "<%s %s:%s>" % (self.__class__.__name__, id(self), self.rid)
+		return "<%s %s:%s>" % (self.__class__.__name__, id(self), self.oid)
 
 # -----------------------------------------------------------------------------
 #
@@ -258,7 +263,7 @@ class RawStorage:
 		to be successful, even before the object is actually stored in the db."""
 		assert isinstance(storedRaw, StoredRaw), "Only stored raw can be registered"
 		self.lock.acquire()
-		key              = storedRaw.rid
+		key              = storedRaw.oid
 		self._cache[key] = storedRaw
 		self.lock.release()
 		return self
@@ -274,12 +279,12 @@ class RawStorage:
 
 	def getStorageKeys( self, storedRawOrKey ):
 		if isinstance(storedRawOrKey, StoredRaw):
-			key = storedRawOrKey.rid
+			key = storedRawOrKey.oid
 			prefix = self._classPrefix.get(storedRawOrKey.__class__)
 			if not prefix:
 				prefix = storedRawOrKey.__class__.__name__.split(".")[-1]
 				self._classPrefix[storedRawOrKey.__class__] = prefix
-			key =  prefix + "." + storedRawOrKey.rid
+			key =  prefix + "." + storedRawOrKey.oid
 		else:
 			key = storedRawOrKey
 		key_data = key + self.DATA_SUFFIX
@@ -290,7 +295,7 @@ class RawStorage:
 		key_meta, key_data = self.getStorageKeys(storedRaw)
 		assert storedRaw.hasStorage()
 		assert storedRaw.STORAGE == self, "StoredRaw stored in a different storage"
-		assert storedRaw.rid in self._cache, "StoredRaw should be already in cache"
+		assert storedRaw.oid in self._cache, "StoredRaw should be already in cache"
 		self.backend.add(key_meta, self.serializeMeta(storedRaw.export()))
 		# We only store the data if it has changed
 		if storedRaw.hasDataChanged():
@@ -309,8 +314,8 @@ class RawStorage:
 			meta.setStorage(self)
 			return meta
 		else:
-			if meta["rid"] in self._cache:
-				res = self._cache[meta["rid"]]
+			if meta["oid"] in self._cache:
+				res = self._cache[meta["oid"]]
 				res.meta(meta)
 			else:
 				raw_class = self._declaredClasses.get(meta.get("type")) or RawStorage
@@ -324,7 +329,7 @@ class RawStorage:
 		return res
 
 	def get( self, keyOrStoredRaw ):
-		cache_key = keyOrStoredRaw.rid if isinstance(keyOrStoredRaw, StoredRaw) else keyOrStoredRaw
+		cache_key = keyOrStoredRaw.oid if isinstance(keyOrStoredRaw, StoredRaw) else keyOrStoredRaw
 		# We look in the cache first
 		if cache_key in self._cache:
 			return self._cache[cache_key]
@@ -345,7 +350,7 @@ class RawStorage:
 				return None
 
 	def has( self, keyOrStoredRaw ):
-		cache_key = keyOrStoredRaw.rid if isinstance(keyOrStoredRaw, StoredRaw) else keyOrStoredRaw
+		cache_key = keyOrStoredRaw.oid if isinstance(keyOrStoredRaw, StoredRaw) else keyOrStoredRaw
 		# We look in the cache first
 		if cache_key in self._cache:
 			return self._cache[cache_key]
@@ -357,7 +362,7 @@ class RawStorage:
 		key_meta, key_data = self.getStorageKeys(keyOrStoredRaw)
 		self.backend.remove(key_meta)
 		self.backend.remove(key_data)
-		cache_key = keyOrStoredRaw.rid if isinstance(keyOrStoredRaw, StoredRaw) else keyOrStoredRaw
+		cache_key = keyOrStoredRaw.oid if isinstance(keyOrStoredRaw, StoredRaw) else keyOrStoredRaw
 		if cache_key in self._cache: del self._cache[cache_key]
 		return self
 
@@ -375,7 +380,7 @@ class RawStorage:
 		#	if self.backend.has(key_meta):
 		#		meta = self.deserializeMeta(self.backend.get(key_meta)),
 		#		dataless_raw = self.restore(meta=meta)
-		#		if dataless_raw.rid == rid:
+		#		if dataless_raw.oid == oid:
 		#			yield dataless_raw
 
 	def keys( self, types=None ):
