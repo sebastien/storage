@@ -5,13 +5,23 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 28-Feb-2013
+# Last mod  : 13-May-2013
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
 
 # TODO: Add worker to sync
 # TODO: Add observer to observe changes to the filesystem in DirectoryBackend
+
+# Should do:
+# - Each object has a revision number 16bit is enough
+# - Each object has a mtime
+# - The object state is characterized by (rev, mtime) which allows to resolve conflicts
+# - Optionally, objects can carry their history of modifications in the form of alist like
+#   [(rev, mtime), {attribute:value}, [attribute]]
+# - Objects when importing an object, we look at the revision number and return
+#   the latest, unless it is explicit that we want to merge (ex: user saves,
+#   but object has changed... so user should be prompted what to do)
 
 # Cababilities:
 # - Files: serve file objects for content
@@ -245,6 +255,12 @@ class Storable(object):
 	def Get( self, sid ):
 		raise NotImplementedError
 
+	def __init__( self ):
+		pass
+		# self._revision = 0
+		# self._history  = []
+		# self._mtime    = None
+
 	def update( self, data ):
 		raise NotImplementedError
 
@@ -262,6 +278,17 @@ class Storable(object):
 		unique amongst objects of the same class. You should use `getStorageKey`
 		to have a globally unique ID"""
 		raise NotImplementedError
+
+	def getRevision( self ):
+		raise NotImplementedError
+
+	def getHistory( self ):
+		pass
+
+	def commit( self, items=None, names=None ):
+		self._mtime     = getTimestamp()
+		self._revision += 1
+		self._history.append((self._mtime, self._revision, names, export(items)))
 
 	def getStorageKey( self ):
 		"""Returns the key with which this object will be stored in an underlying
