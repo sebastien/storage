@@ -5,7 +5,7 @@
 # License   : Revised BSD License                              © FFunction, inc
 # -----------------------------------------------------------------------------
 # Creation  : 13-Aug-2012
-# Last mod  : 13-Aug-2012
+# Last mod  : 03-Jun-2012
 # -----------------------------------------------------------------------------
 
 import types, json
@@ -46,6 +46,10 @@ class StorageDecoration:
 	def Get(cls, storableClass):
 		return getattr(storableClass, cls.KEY)
 
+	@classmethod
+	def Has(cls, storableClass):
+		return hasattr(storableClass, cls.KEY)
+
 	def __init__( self, storableClass, url, restrict=None, methods=None, export=None ):
 		assert issubclass(storableClass, Storable), "Storable class requires a Storable object"
 		self.storable     = storableClass
@@ -59,7 +63,7 @@ class StorageDecoration:
 		# NOTE: We add the "web" target so that object export function can
 		# hide information that should not be communicated (ie. password)
 		self.export["target"] = "web"
-
+	
 	def listInvocables( self, storable=None ):
 		storable = storable or self.storable
 		for name in dir(storable):
@@ -91,31 +95,14 @@ class StorageDecoration:
 
 class StorageServer(retro.web.Component):
 
-	def __init__( self, *storableClasses ):
+	def __init__( self, prefix="/api", classes=None ):
 		retro.web.Component.__init__(self)
+		self.PREFIX          = prefix
 		self.storableClasses = []
-		self.add(*storableClasses)
+		if classes: self.add(*classes)
 
-	def _generateWrappers( self, s ):
-		info               = StorageDecoration.Get(s)
-		url                = info.url or info.getName()
-		handler_create     = lambda request:     self.onStorableCreate         (s, info, request)
-		handler_update     = lambda request, sid:self.onStorableUpdate         (s, info, request, sid)
-		handler_get        = lambda request, sid:self.onStorableGet            (s, info, request, sid)
-		# Generic to storable
-		self.registerHandler(handler_create, dict(POST=url))
-		self.registerHandler(handler_update, dict(POST=url + "/{sid:segment}"))
-		self.registerHandler(handler_get,    dict(GET =url + "/{sid:segment}"))
-		for name, meta in info.listInvocables():
-			def wrap(name, meta):
-				invoke_url, restrict, methods, contentType = meta
-				handler = lambda request, sid, *args, **kwargs: self.onStorableInvokeMethod( s, name, contentType, request, sid, *args, **kwargs )
-				self.registerHandler(handler,    dict(GET=url + "/{sid:segment}/" + invoke_url))
-			wrap(name, meta)
-		# Specific to StoredRaw
-		if issubclass(s, StoredRaw):
-			handler = lambda request, sid: self.onRawGetData( s, request, sid )
-			self.registerHandler(handler,    dict(GET =url + "/{sid:segment}/data"))
+	def use( self, *storableClasses ):
+		return self.add(*storableClasses)
 
 	def create( self, request, storableClass ):
 		info = StorageDecoration.Get(storableClass)
@@ -143,6 +130,7 @@ class StorageServer(retro.web.Component):
 			assert info, "Storable class must be decorated with StorageDecoration"
 			assert isinstance(info, StorageDecoration), "Storable information should be StorageDecoration"
 			self.storableClasses.append(s)
+		return self
 
 	def onStorableCreate( self, storableClass, info, request ):
 		data = request.data()
@@ -189,11 +177,25 @@ class StorageServer(retro.web.Component):
 				yield _
 		return request.respond(iterate)
 
-# USAGE:
-# StorageService(
-# Photo, Video,
-# Site, Account,
-# Tutorial, TutorialStep
-#)
+	def _generateWrappers( self, s ):
+		info               = StorageDecoration.Get(s)
+		url                = info.url or info.getName()
+		handler_create     = lambda request:     self.onStorableCreate         (s, info, request)
+		handler_update     = lambda request, sid:self.onStorableUpdate         (s, info, request, sid)
+		handler_get        = lambda request, sid:self.onStorableGet            (s, info, request, sid)
+		# Generic to storable
+		self.registerHandler(handler_create, dict(POST=url))
+		self.registerHandler(handler_update, dict(POST=url + "/{sid:segment}"))
+		self.registerHandler(handler_get,    dict(GET =url + "/{sid:segment}"))
+		for name, meta in info.listInvocables():
+			def wrap(name, meta):
+				invoke_url, restrict, methods, contentType = meta
+				handler = lambda request, sid, *args, **kwargs: self.onStorableInvokeMethod( s, name, contentType, request, sid, *args, **kwargs )
+				self.registerHandler(handler,    dict(GET=url + "/{sid:segment}/" + invoke_url))
+			wrap(name, meta)
+		# Specific to StoredRaw
+		if issubclass(s, StoredRaw):
+			handler = lambda request, sid: self.onRawGetData( s, request, sid )
+			self.registerHandler(handler,    dict(GET =url + "/{sid:segment}/data"))
 
 # EOF
