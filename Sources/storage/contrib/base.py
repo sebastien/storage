@@ -27,6 +27,16 @@ simply import and extend these objects in your own web application.
 
 # -----------------------------------------------------------------------------
 #
+# FILE (RAW)
+#
+# -----------------------------------------------------------------------------
+
+@http("file")
+class File(StoredRaw):
+	"""Stores any kind of file"""
+
+# -----------------------------------------------------------------------------
+#
 # IMAGE (RAW)
 #
 # -----------------------------------------------------------------------------
@@ -242,6 +252,7 @@ class Comment(StoredObject):
 #
 # -----------------------------------------------------------------------------
 
+@http("article")
 class Article(StoredObject):
 
 	PROPERTIES = {
@@ -272,7 +283,7 @@ class Interface:
 	"""Provides a single-point interface to all the data loading/saving/querying
 	operations."""
 
-	CLASSES  = (Image, Video, Account,  Site)
+	CLASSES  = (File, Image, Video, Comment, Article, Account, Site)
 	INSTANCE = None
 	OBJECT_BACKEND = DirectoryBackend
 	RAW_BACKEND    = DirectoryBackend
