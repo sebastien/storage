@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 10-Mar-2013
+# Last mod  : 10-Jun-2013
 # -----------------------------------------------------------------------------
 
 import uuid, types, weakref, threading
@@ -202,7 +202,6 @@ class StoredRaw(Storable):
 				self._meta[name] = value
 				return self
 
-
 	def data( self, size=None ):
 		"""Iterates through the data with chunks of the given size."""
 		if self._data:
@@ -339,7 +338,7 @@ class RawStorage:
 			# print "GET IMAGE", keyOrStoredRaw
 			# print key_meta, key_data
 			# print "+==="
-			if self.backend.has(key_data):
+			if self.backend.has(key_data) or self.backend.has(key_meta):
 				# We don't deserialize the data as it might be too big
 				meta = self.deserializeMeta(self.backend.get(key_meta))
 				raw_object = self.restore(meta=meta)
@@ -395,8 +394,9 @@ class RawStorage:
 		# FIXME: Should be updated according to raw storage
 		suffix_len = len(self.DATA_SUFFIX)
 		for key in self.keys(types):
-			if count < 0 or (i >= start and i < end):
-				if not key.endswith(self.DATA_SUFFIX): continue
+			if count < 0 or (i >= start and (i < end or end < 0)):
+				if not key.endswith(self.DATA_SUFFIX) and not key.endswith(self.META_SUFFIX): 
+					continue
 				key = key[:-suffix_len]
 				s = self.get(key)
 				if not s:
