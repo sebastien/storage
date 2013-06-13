@@ -182,7 +182,6 @@ class StorageServer(retro.web.Component):
 		storable = storableClass.Get(sid)
 		# FIXME: Should have a property to tell whether we create an object
 		# when it does not exist
-		print "STORABLE EXISTS?", storable, sid, storableClass
 		if not storable:
 			storable = storableClass(oid=sid)
 			#return request.notFound()
@@ -208,23 +207,23 @@ class StorageServer(retro.web.Component):
 		res     = [_.export(**options) for _ in storableClass.List(start=start, end=end)]
 		return request.returns(res)
 
-	def onRawGetData( self, storableClass, sid, request ):
+	def onRawGetData( self, storableClass, request, sid ):
 		storable = storableClass.Get(sid)
 		assert isinstance(storable, StoredRaw)
 		def iterate():
 			for _ in storable.data():
 				yield _
-		return request.respond(iterate)
+		return request.respond(iterate(), contentType=storable.meta("contentType") or storable.meta("mimeType") or "application/x-binary")
 
 	def _generateHandlers( self, s ):
 		"""Internal method that generates HTTP handlers for the given
 		storable class."""
 		info               = StorageDecoration.Get(s)
 		url                = info.url or info.getName()
-		handler_create     = lambda request:     self.onStorableCreate         (s, info, request)
-		handler_update     = lambda request, sid:self.onStorableUpdate         (s, info, request, sid)
-		handler_get        = lambda request, sid:self.onStorableGet            (s, info, request, sid)
-		handler_list       = lambda request, start, end:self.onStorableList     (s, info, request, start, end)
+		handler_create     = lambda request             : self.onStorableCreate (s, info, request)
+		handler_update     = lambda request, sid        : self.onStorableUpdate (s, info, request, sid)
+		handler_get        = lambda request, sid        : self.onStorableGet    (s, info, request, sid)
+		handler_list       = lambda request, start, end : self.onStorableList   (s, info, request, start, end)
 		# Generic to storable
 		self.registerHandler(handler_create, dict(GET_POST=url))
 		self.registerHandler(handler_update, dict(POST=url + "/{sid:segment}"))

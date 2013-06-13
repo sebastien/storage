@@ -423,7 +423,7 @@ class StoredObject(Storable):
 		return jsonifier(self.export(**options))
 
 	def __repr__( self ):
-		return "<%s %s:%s>" % (self.__class__.__name__, id(self), self.oid)
+		return "<obj:%s %s:%s>" % (self.__class__.__name__, id(self), self.oid)
 
 # -----------------------------------------------------------------------------
 #

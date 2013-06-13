@@ -174,9 +174,15 @@ class StoredRaw(Storable):
 			self._meta = meta
 		for k in options:
 			self._meta[k] = options[k]
+		return self
 
 	def clearMeta( self ):
 		self.meta = {}
+		return self
+
+	def update( self, propertiesAndRelations ):
+		"""Compatiblity method for Storable, is an alias to setMeta"""
+		return self.setMeta(propertiesAndRelations)
 
 	def meta( self, name=NOTHING, value=NOTHING, **options ):
 		"""Returns the meta data"""
@@ -236,7 +242,7 @@ class StoredRaw(Storable):
 		self.STORAGE.update(self)
 
 	def __repr__( self ):
-		return "<%s %s:%s>" % (self.__class__.__name__, id(self), self.oid)
+		return "<raw:%s %s:%s>" % (self.__class__.__name__, id(self), self.oid)
 
 # -----------------------------------------------------------------------------
 #
