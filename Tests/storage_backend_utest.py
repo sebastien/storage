@@ -166,18 +166,28 @@ class AbstractBackendTest:
 		bk = self.backend
 		
 		#empty database
-		self.assertListEqual(bk.keys(),[])
+		klist=[]
+		for k in bk.keys():
+			klist+=[k]
+		self.assertListEqual(klist,[])
 		
 		#keys
 		keys = ["key1","key2","key3","key4"]
 		for k in keys:
 			bk.add(k,"value")
-		self.assertListEqual(keys,bk.keys())
+
+		klist=[]
+		for k in bk.keys():
+			klist+=[k]
+		self.assertListEqual(keys,klist)
 		
 		#removed
 		bk.remove("key3")
 		bk.remove("key4")
-		self.assertListEqual(bk.keys(),keys[:2])
+		klist=[]
+		for k in bk.keys():
+			klist+=[k]
+		self.assertListEqual(klist,keys[:2])
 		
 	def testClear(self):
 		bk = self.backend
@@ -214,7 +224,7 @@ class AbstractBackendTest:
 		l=[]
 		for item in bk.list():
 			l += [item]
-		self.assetListEqual(l,values)
+		self.assertListEqual(l,values)
 		
 	def testCount(self):
 		bk = self.backend
@@ -234,7 +244,6 @@ class AbstractBackendTest:
 		bk.remove(keys[-2])
 		self.assertEqual(len(keys)-2,bk.count())
 		
-
 
 class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 
@@ -259,6 +268,7 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 		
 		#closed backend
 		self.assertRaises(Exception,bk.close)
+
 		
 class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 	
@@ -268,18 +278,18 @@ class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 
 	def _createBackend(self):
-		return storage.DirectoryBackend(os.getcwd()+"/test-dir")
-		
+		return storage.DirectoryBackend(os.getcwd()+"/test-dir/")
+
 	@classmethod
 	def setUpClass(cls):
 		if not (os.path.exists(os.getcwd()+"/test-dir")):
-			os.mkdir(os.getcwd()+"/test-dir")
+			os.mkdir(os.getcwd()+"/test-dir/")
 		
 	@classmethod
 	def tearDownClass(cls):
 		if (os.path.exists(os.getcwd()+"/test-dir")):
 			shutil.rmtree(os.getcwd()+"/test-dir")
-		
+	
 	def setUp(self):
 		self.backend = self._createBackend()
 		keys = self.backend.keys()
