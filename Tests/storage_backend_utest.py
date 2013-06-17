@@ -1,25 +1,32 @@
-##
-# DBM BACKEND TEST
-##
+# -----------------------------------------------------------------------------
+# Project   : FFCTN/Storage
+# -----------------------------------------------------------------------------
+# Author    : Sebastien Pierre                            <sebastien@ffctn.com>
+# License   : BSD License
+# -----------------------------------------------------------------------------
+# Creation  : 17-Jun-2013
+# Last mod  : 17-Jun-2013
+# -----------------------------------------------------------------------------
 
-import sys
-sys.path.append("../")
+import sys, unittest, datetime, random, os, shutil
+import storage
 
-import Sources.storage.__init__ as storage
-
-import unittest
-import datetime
-import random
-import os
-import shutil
+# -----------------------------------------------------------------------------
+#
+# ABSTRACT BACKEND TEST
+#
+# -----------------------------------------------------------------------------
 
 class AbstractBackendTest:
+	"""An abstract test that exercises all the methods of the storage.Backend
+	interface. Override the `_createBackend` to return a specific backend
+	instance in subclasses."""
 
 	def _createBackend( self ):
 		raise NotImplementedError
 
 	def setUp(self):
-		self.path= "./" + os.path.basename(__file__).split(".")[0]
+		self.path    = "./" + os.path.basename(__file__).split(".")[0]
 		self.backend = self._createBackend()
 		self.backend.clear()
 		
@@ -27,17 +34,17 @@ class AbstractBackendTest:
 		bk = self.backend
 		
 		#Test keys --accepted
-		keys =   ["String1","String2","String3","String4","String5","String5","String5"]
-		values = ["Value1", "Value2", "Value3", "Value4", "Value5", "Value5", "Value6" ]
+		keys =   ["String1", "String2", "String3", "String4", "String5", "String5", "String5"]
+		values = ["Value1" , "Value2" , "Value3" , "Value4" , "Value5" , "Value5" , "Value6" ]
 		
 		a = bk.keys()
 		for i in a:
 			print (i)
 		
 		#simple
-		self.assertEqual(0,bk.count())
-		bk.add(keys[0],values[0])
-		self.assertEqual(1,bk.count())
+		self.assertEqual(0, bk.count())
+		bk.add(keys[0], values[0])
+		self.assertEqual(1, bk.count())
 
 		#multi
 		bk.add(keys[1],values[1])
@@ -245,6 +252,12 @@ class AbstractBackendTest:
 		self.assertEqual(len(keys)-2,bk.count())
 		
 
+# -----------------------------------------------------------------------------
+#
+# DBM BACKEND TEST
+#
+# -----------------------------------------------------------------------------
+
 class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 
 	def _createBackend( self ):
@@ -269,11 +282,23 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 		#closed backend
 		self.assertRaises(Exception,bk.close)
 
-		
+# -----------------------------------------------------------------------------
+#
+# MEMORY BACKEND TEST
+#
+# -----------------------------------------------------------------------------
+
 class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 	
 	def _createBackend(self):
 		return storage.MemoryBackend()
+
+
+# -----------------------------------------------------------------------------
+#
+# DIRECTORY BACKEND TEST
+#
+# -----------------------------------------------------------------------------
 
 class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 
@@ -295,10 +320,10 @@ class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 		keys = self.backend.keys()
 		for k in keys:
 			self.backend.remove(k)
-		
+
 	def testGetFileName(self):
 		bk = self.backend
-		
+
 		#undefined item
 		self.assertIsNone(bk.getFileName("file"))
 		
@@ -310,8 +335,9 @@ class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 		
 		#invalid filename
 		bk.add("my./.file","data")
-		
-		
-	
+
+
 if __name__ == "__main__":
 	unittest.main()
+
+# EOF
