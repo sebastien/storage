@@ -1,4 +1,4 @@
-# -----------------------------------------------------------------------------
+# encoding:UTF-8
 # Project   : FFCTN/Storage
 # -----------------------------------------------------------------------------
 # Author    : Sebastien Pierre                            <sebastien@ffctn.com>
@@ -22,23 +22,24 @@ class AbstractBackendTest:
 	interface. Override the `_createBackend` to return a specific backend
 	instance in subclasses."""
 
-	KEYS_VALID    = ["", u"", u"é".encode("latin-1"), u"é".encode("utf-8"), "A", "0", "1", "*", "&", "é", "-", "+", "_", "\\", "key", "key_1", "key1", "000", "123", "KEY" * 256, "KEY" * 1024, "KEY" * 2048, "KEY" * 4096]
+	KEYS_VALID    = ["", u"", u"é".encode("utf-8"), "A", "a", "0", "1", "*", "&", "é", "-", "+", "_", "\\", "key", "key_1", "key1", "000", "123", "KEY" * 256, "KEY" * 1024, "KEY" * 2048, "KEY" * 4096]
 
-	KEYS_INVALID  = [Exception(), object(), datetime.datetime(), None, True, False]
-	VALUES_VALID  = keys + [
+	KEYS_INVALID  = [Exception(), object(), datetime.datetime(2013,2,6), None, True, False]
+	VALUES_VALID  = KEYS_VALID + [
 			True, False, None,
 			1, 1.0, long(12313212),
-			(,), [], {},
+			tuple(),list(),dict(),
 			(1,1), [1,1], {"a":1, "b":1},
 			(1,"a"), [1,"a"], {"a":1, "b":"a"},
-			((,),(,),(,)), [[],[],[]], {"a":{}, "b":{}, "c":{}},
+			((),(),()), [[],[],[]], {"a":{}, "b":{}, "c":{}},
+			([],[]),[(),()],
 			time.time(),
 			time.gmtime(),
-			datetime.datetime(),
+			datetime.datetime(2013,2,6)
 		]
 
 	VALUES_INVALID = [
-		object(),
+		object(),range(2)
 	]
 
 	def _createBackend( self ):
@@ -51,10 +52,6 @@ class AbstractBackendTest:
 		
 	def testAdd(self):
 
-		
-		d = dict(a=1,b=2,c=3)
-		d["d"] = d
-
 		a = self.backend.keys()
 		for i in a:
 			print (i)
@@ -63,7 +60,7 @@ class AbstractBackendTest:
 
 		# Tests the keys
 		count = 0
-		for key in keys:
+		for key in self.KEYS_VALID:
 			self.backend.add(key, "OK")
 			self.assertEqual(count + 1, self.backend.count())
 			count += 1
@@ -167,22 +164,26 @@ class AbstractBackendTest:
 		for key in self.KEYS_VALID:
 			self.assertTrue(self.backend.has(key))
 		for key in self.KEYS_VALID:
-			self.backend.remove(key, "OK")
+			self.backend.remove(key)
 		for key in self.KEYS_VALID:
 			self.assertFalse(self.backend.has(key))
 		
 	def testGet(self):
 		#undefined
-		self.assertIsNone(self.backend.get("key"))
+		for key in self.KEYS_VALID:
+			self.assertIsNone(self.backend.get(key))
 		
 		#existing
-		self.backend.add("key","value")
-		self.assertMultiLineEqual("value",self.backend.get("key"))
-		self.assertMultiLineEqual("value",self.backend.get("key"))
+		for key in self.KEYS_VALID:
+			for v in self.VALUES_VALID:
+				self.backend.add(key+repr(v),v)
+				self.assertMultiLineEqual(repr(v), self.backend.get(key+repr(v)))
 		
 		#removed
-		self.backend.remove("key")
-		self.assertIsNone(self.backend.get("key"))
+		for key in self.KEYS_VALID:
+			for v in self.VALUES_VALID:
+				self.backend.remove(k+repr(v))
+				self.assertIsNone(self.backend.get(key+repr(v)))
 		
 	def testKeys(self):
 		#empty database
@@ -192,22 +193,21 @@ class AbstractBackendTest:
 		self.assertListEqual(klist,[])
 		
 		#keys
-		keys = ["key1","key2","key3","key4"]
-		for k in keys:
+		for k in self.KEYS_VALID:
 			self.backend.add(k,"value")
 
 		klist=[]
 		for k in self.backend.keys():
 			klist+=[k]
-		self.assertListEqual(keys,klist)
+		self.assertListEqual(self.KEYS_VALID,klist)
 		
 		#removed
-		self.backend.remove("key3")
-		self.backend.remove("key4")
+		for k in self.KEYS_VALID:
+			self.remove(k)
 		klist=[]
 		for k in self.backend.keys():
 			klist+=[k]
-		self.assertListEqual(klist,keys[:2])
+		self.assertListEqual(klist,[])
 		
 	def testClear(self):
 		#clear empty database
@@ -216,9 +216,8 @@ class AbstractBackendTest:
 		self.assertEqual(0,self.backend.count())
 		
 		#clear database
-		keys = ["key1","key2","key3","key4"]
-		for k in keys:
-			self.backend.add(k,"value")
+		for k in self.KEYS_VALID:
+			self.backend.add(k,"OK")
 			
 		self.assertNotEqual(0,self.backend.count())
 		self.backend.clear()
@@ -226,21 +225,25 @@ class AbstractBackendTest:
 		
 	def testList(self):
 		#empty database
-		l = []
+		values_list = []
 		for item in self.backend.list():
-			l += [item]
-		self.assertListEqual([],l)
+			values_list += [item]
+		self.assertListEqual([],values_list)
 		
-		#list
-		keys   = ["key1","key2","key3","key4","key5"]
-		values = ["val1","val2","val3","val4","val4"]
-		for i in range(len(keys)):
-			self.backend.add(keys[i],values[i])
-			
-		l=[]
+		for i,v in enumerate(self.VALUES_VALID):
+			self.backend.add("key_"+repr(i),v)	
+		values_list=[]
 		for item in self.backend.list():
-			l += [item]
-		self.assertListEqual(l,values)
+			values_list += [item]
+		self.assertListEqual(values_list,self.VALUES_VALID)
+
+		for i in range(len(self.VALUES_VALID)):
+			self.remove("key_"+repr(i))
+		values_list=[]
+		for item in self.backend.list():
+			values_list += [item]
+		self.assertListEqual([],values_list)
+
 		
 	def testCount(self):
 		#empty
@@ -294,7 +297,7 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 # MEMORY BACKEND TEST
 #
 # -----------------------------------------------------------------------------
-
+#@unittest.skip("Memory")
 class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 	
 	def _createBackend(self):
@@ -306,7 +309,7 @@ class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 # DIRECTORY BACKEND TEST
 #
 # -----------------------------------------------------------------------------
-
+#@unittest.skip("Directory")
 class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 
 	def _createBackend(self):
@@ -343,7 +346,17 @@ class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 		#invalid filename
 		self.backend.add("my./.file","data")
 
+	def testKeyPathMapping(self):
 
+		for k in KEYS_VALID:
+			path = self_defaultKeyToPath(None,k)
+			self.assertMultiLineEqual(k,self._defaultPathToKey(None,path))
+
+	def testDefaultReadWrite(self):
+		for i,v in enumerate(VALUES_VALID):
+			self.writeFile(self.root+"key_"+repr(i),v)
+			val = self.readFile(self.root+"key_"+repr(i))
+			self.assertMultiLineEqual(val,repr(v))
 if __name__ == "__main__":
 	unittest.main()
 
