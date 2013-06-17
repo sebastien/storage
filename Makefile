@@ -19,7 +19,7 @@ SOURCE_FILES    = $(shell find $(SOURCES) -name "*.py")
 TEST_FILES      = $(shell find $(TESTS) -name "*.py")
 DIST_CONTENT    = $(DOCUMENTATION) $(SOURCES) $(SCRIPTS) $(TESTS) $(RESOURCES) Makefile README setup.py
 CHECK_BLACKLIST = 
-PYTHON          = $(shell which python)
+PYTHON          = PYTHONPATH=$(SOURCES) $(shell which python)
 PYTHONHOME      = $(shell $(PYTHON) -c "import sys;print filter(lambda x:x[-13:]=='site-packages',sys.path)[0]")
 SDOC            = $(shell which sdoc)
 PYCHECKER       = $(shell which pychecker)
