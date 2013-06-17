@@ -8,7 +8,7 @@
 # Last mod  : 17-Jun-2013
 # -----------------------------------------------------------------------------
 
-import sys, unittest, datetime, random, os, shutil
+import sys, unittest, time, datetime, random, os, shutil
 import storage
 
 # -----------------------------------------------------------------------------
@@ -22,6 +22,25 @@ class AbstractBackendTest:
 	interface. Override the `_createBackend` to return a specific backend
 	instance in subclasses."""
 
+	KEYS_VALID    = ["", u"", u"é".encode("latin-1"), u"é".encode("utf-8"), "A", "0", "1", "*", "&", "é", "-", "+", "_", "\\", "key", "key_1", "key1", "000", "123", "KEY" * 256, "KEY" * 1024, "KEY" * 2048, "KEY" * 4096]
+
+	KEYS_INVALID  = [Exception(), object(), datetime.datetime(), None, True, False]
+	VALUES_VALID  = keys + [
+			True, False, None,
+			1, 1.0, long(12313212),
+			(,), [], {},
+			(1,1), [1,1], {"a":1, "b":1},
+			(1,"a"), [1,"a"], {"a":1, "b":"a"},
+			((,),(,),(,)), [[],[],[]], {"a":{}, "b":{}, "c":{}},
+			time.time(),
+			time.gmtime(),
+			datetime.datetime(),
+		]
+
+	VALUES_INVALID = [
+		object(),
+	]
+
 	def _createBackend( self ):
 		raise NotImplementedError
 
@@ -31,194 +50,184 @@ class AbstractBackendTest:
 		self.backend.clear()
 		
 	def testAdd(self):
-		bk = self.backend
+
 		
-		#Test keys --accepted
-		keys =   ["String1", "String2", "String3", "String4", "String5", "String5", "String5"]
-		values = ["Value1" , "Value2" , "Value3" , "Value4" , "Value5" , "Value5" , "Value6" ]
-		
-		a = bk.keys()
+		d = dict(a=1,b=2,c=3)
+		d["d"] = d
+
+		a = self.backend.keys()
 		for i in a:
 			print (i)
 		
-		#simple
-		self.assertEqual(0, bk.count())
-		bk.add(keys[0], values[0])
-		self.assertEqual(1, bk.count())
+		self.assertEqual(0,       self.backend.count())
 
-		#multi
-		bk.add(keys[1],values[1])
-		bk.add(keys[2],values[2])
-		bk.add(keys[3],values[3])
-		self.assertEqual(4,bk.count())
+		# Tests the keys
+		count = 0
+		for key in keys:
+			self.backend.add(key, "OK")
+			self.assertEqual(count + 1, self.backend.count())
+			count += 1
 
-		#same key,value addition
-		bk.add(keys[4],values[4])
-		self.assertEqual(5,bk.count())
-		bk.add(keys[5],values[5])
-		self.assertEqual(5,bk.count())
-		self.assertEqual(bk.get(keys[5]),values[5])
-		self.assertEqual(bk.get(keys[5]),values[4])
+		# Tests the values
+		count = self.backend.count()
+		for i,v in enumerate(values):
+			self.backend.add("value_" + str(i), v)
+			self.assertEqual(count + i + 1, self.backend.count())
 
-		#same key addition
-		bk.add(keys[6],values[6])
-		self.assertEqual(5,bk.count())
-		self.assertMultiLineEqual(bk.get(keys[6]),values[6])
-		self.assertNotEqual(bk.get(keys[6]),values[5])
+		# Tests value transparency
+		for i,v in enumerate(values):
+			self.assertEqual(self.backend.get("value_" + str(i)), v)
+
+		# Overriding a key (key update)
+		# TODO: Should this raise an error?
+		for key in keys:
+			key = "key_" + key
+			self.backend.add(key, "OK")
+			self.assertEqual(self.backend.get(key), "OK")
+			for v in values:
+				# FIXME: Should raise an exception because the key is already defined
+				self.backend.add(key, v)
+				self.assertEqual(self.backend.get(key), v)
 
 		#Test keys --invalid
 		invalid_entry = [None,0,1,-1,0.5,list(),dict(),tuple(),(1,"a",3.5),[1,2,3,4],{"a":1,2:"b"},datetime.date(2013,2,6)]
 
 		#invalid key [assuming not accepted]
 		for ktype in invalid_entry:
-			bk.add(ktype,"Value")
-			self.assertEqual(5,bk.count())
+			self.backend.add(ktype,"Value")
+			self.assertEqual(5,self.backend.count())
 
 		#invalid value [assuming accepted]
 		for i,vtype in enumerate(keys):
-			bk.add(repr(i),vtype)
-			self.assertEqual(6+i,bk.count())
+			self.backend.add(repr(i),vtype)
+			self.assertEqual(6+i,self.backend.count())
 			
 		#stress test TODO
 
 	def testUpdate(self):
-		bk = self.backend
-
-		bk.add("key1","value1")
-		bk.add("key2","value2")
-		bk.add("key3","value3")
-		bk.add("key4","value4")
+		self.backend.add("key1","value1")
+		self.backend.add("key2","value2")
+		self.backend.add("key3","value3")
+		self.backend.add("key4","value4")
 		count = 4
 
 		#simple
-		self.assertMultiLineEqual("value1",bk.get("key1"))
-		bk.update("key1","new_value")
-		self.assertMultiLineEqual("new_value",bk.get("key1"))
+		self.assertMultiLineEqual("value1",self.backend.get("key1"))
+		self.backend.update("key1","new_value")
+		self.assertMultiLineEqual("new_value",self.backend.get("key1"))
 
 		#update undefined entry
-		bk.update("key5","value5")
+		self.backend.update("key5","value5")
 		count+=1
 
 		#update removed entry
-		bk.remove("key1")
-		bk.update("key1","value4")
-		self.assertEqual(count,bk.count())
-		self.assertMultiLineEqual(bk.get("key1"),"value4")
+		self.backend.remove("key1")
+		self.backend.update("key1","value4")
+		self.assertEqual(count,self.backend.count())
+		self.assertMultiLineEqual(self.backend.get("key1"),"value4")
 		
 		#invalid key [IndexError]
 		invalid_entry = [None,0,1,-1,0.5,list(),dict(),tuple(),(1,"a",3.5),[1,2,3,4],{"a":1,2:"b"},datetime.date(2013,2,6)]
 		
 		for tkey in invalid_entry:
-			self.assertRaises(Exception,bk.update,tkey,"value")
+			self.assertRaises(Exception,self.backend.update,tkey,"value")
 		
 	def testRemove(self):
-		bk = self.backend
-		
-		bk.add("key1","value1")
-		bk.add("key2","value2")
-		bk.add("key3","value3")
-		bk.add("key4","value4")
+		self.backend.add("key1","value1")
+		self.backend.add("key2","value2")
+		self.backend.add("key3","value3")
+		self.backend.add("key4","value4")
 		
 		#simple
-		self.assertEqual(bk.count(),4)
-		bk.remove("key1")
-		self.assertEqual(bk.count(),3)
-		self.assertIsNone(bk.get("key1"))
+		self.assertEqual(self.backend.count(),4)
+		self.backend.remove("key1")
+		self.assertEqual(self.backend.count(),3)
+		self.assertIsNone(self.backend.get("key1"))
 		
 		#remove undefined entry [IndexError]
-		self.assertRaises(Exception,bk.remove,"key1")
+		self.assertRaises(Exception,self.backend.remove,"key1")
 		
 		#invalid keys [IndexError]
 		invalid_entry = [None,0,1,-1,0.5,list(),dict(),tuple(),(1,"a",3.5),[1,2,3,4],{"a":1,2:"b"},datetime.date(2013,2,6)]
 		for tkey in invalid_entry:
-			self.assertRaises(Exception,bk.remove,tkey)
+			self.assertRaises(Exception,self.backend.remove,tkey)
 			
 		#stress test TODO
 		
 	def testSync(self):
-		pass
+		# Make sure sync is implemented
+		# TODO: Needs to be elaborated
+		self.backend.sync()
 		
 	def testHas(self):
-		bk = self.backend
-		
-		#undefined
-		self.assertFalse(bk.has("key"))
-		
-		#existing
-		bk.add("key","value")
-		self.assertTrue(bk.has("key"))
-		self.assertTrue(bk.has("key"))
-		self.assertTrue(bk.has("key"))
-		
-		#removed
-		bk.remove("key")
-		self.assertFalse(bk.has("key"))
+		for key in self.KEYS_VALID:
+			self.assertFalse(self.backend.has(key))
+		for key in self.KEYS_VALID:
+			self.backend.add(key, "OK")
+		for key in self.KEYS_VALID:
+			self.assertTrue(self.backend.has(key))
+		for key in self.KEYS_VALID:
+			self.backend.remove(key, "OK")
+		for key in self.KEYS_VALID:
+			self.assertFalse(self.backend.has(key))
 		
 	def testGet(self):
-		bk = self.backend
-		
 		#undefined
-		self.assertIsNone(bk.get("key"))
+		self.assertIsNone(self.backend.get("key"))
 		
 		#existing
-		bk.add("key","value")
-		self.assertMultiLineEqual("value",bk.get("key"))
-		self.assertMultiLineEqual("value",bk.get("key"))
+		self.backend.add("key","value")
+		self.assertMultiLineEqual("value",self.backend.get("key"))
+		self.assertMultiLineEqual("value",self.backend.get("key"))
 		
 		#removed
-		bk.remove("key")
-		self.assertIsNone(bk.get("key"))
+		self.backend.remove("key")
+		self.assertIsNone(self.backend.get("key"))
 		
 	def testKeys(self):
-		bk = self.backend
-		
 		#empty database
 		klist=[]
-		for k in bk.keys():
+		for k in self.backend.keys():
 			klist+=[k]
 		self.assertListEqual(klist,[])
 		
 		#keys
 		keys = ["key1","key2","key3","key4"]
 		for k in keys:
-			bk.add(k,"value")
+			self.backend.add(k,"value")
 
 		klist=[]
-		for k in bk.keys():
+		for k in self.backend.keys():
 			klist+=[k]
 		self.assertListEqual(keys,klist)
 		
 		#removed
-		bk.remove("key3")
-		bk.remove("key4")
+		self.backend.remove("key3")
+		self.backend.remove("key4")
 		klist=[]
-		for k in bk.keys():
+		for k in self.backend.keys():
 			klist+=[k]
 		self.assertListEqual(klist,keys[:2])
 		
 	def testClear(self):
-		bk = self.backend
-		
 		#clear empty database
-		self.assertEqual(0,bk.count())
-		bk.clear()
-		self.assertEqual(0,bk.count())
+		self.assertEqual(0,self.backend.count())
+		self.backend.clear()
+		self.assertEqual(0,self.backend.count())
 		
 		#clear database
 		keys = ["key1","key2","key3","key4"]
 		for k in keys:
-			bk.add(k,"value")
+			self.backend.add(k,"value")
 			
-		self.assertNotEqual(0,bk.count())
-		bk.clear()
-		self.assertEqual(0,bk.count())
+		self.assertNotEqual(0,self.backend.count())
+		self.backend.clear()
+		self.assertEqual(0,self.backend.count())
 		
 	def testList(self):
-		bk = self.backend
-		
 		#empty database
 		l = []
-		for item in bk.list():
+		for item in self.backend.list():
 			l += [item]
 		self.assertListEqual([],l)
 		
@@ -226,30 +235,28 @@ class AbstractBackendTest:
 		keys   = ["key1","key2","key3","key4","key5"]
 		values = ["val1","val2","val3","val4","val4"]
 		for i in range(len(keys)):
-			bk.add(keys[i],values[i])
+			self.backend.add(keys[i],values[i])
 			
 		l=[]
-		for item in bk.list():
+		for item in self.backend.list():
 			l += [item]
 		self.assertListEqual(l,values)
 		
 	def testCount(self):
-		bk = self.backend
-		
 		#empty
-		self.assertEqual(0,bk.count())
+		self.assertEqual(0,self.backend.count())
 		
 		#sample
 		keys = ["key1","key2","key3","key4"]
 		for k in keys:
-			bk.add(k,"value")
-		self.assertEqual(len(keys),bk.count())
-		self.assertEqual(len(keys),bk.count())
+			self.backend.add(k,"value")
+		self.assertEqual(len(keys),self.backend.count())
+		self.assertEqual(len(keys),self.backend.count())
 		
 		#remove
-		bk.remove(keys[-1])
-		bk.remove(keys[-2])
-		self.assertEqual(len(keys)-2,bk.count())
+		self.backend.remove(keys[-1])
+		self.backend.remove(keys[-2])
+		self.assertEqual(len(keys)-2,self.backend.count())
 		
 
 # -----------------------------------------------------------------------------
@@ -272,15 +279,15 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 			os.remove(self.path+".db")
 
 	def testClose(self):
-		bk = self.backend
+		self.backend = self.backend
 		
 		#close
-		bk.add("key","value")
-		bk.close()
-		self.assertRaises(Exception,bk.update,"key","new_value")
+		self.backend.add("key","value")
+		self.backend.close()
+		self.assertRaises(Exception,self.backend.update,"key","new_value")
 		
 		#closed backend
-		self.assertRaises(Exception,bk.close)
+		self.assertRaises(Exception,self.backend.close)
 
 # -----------------------------------------------------------------------------
 #
@@ -322,19 +329,19 @@ class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 			self.backend.remove(k)
 
 	def testGetFileName(self):
-		bk = self.backend
+		self.backend = self.backend
 
 		#undefined item
-		self.assertIsNone(bk.getFileName("file"))
+		self.assertIsNone(self.backend.getFileName("file"))
 		
 		#get file
-		bk.add("file","data")
-		self.assertIsNotNone(bk.getFileName("file"))
-		self.assertIsNot("",bk.getFileName("file"))
-		print bk.getFileName("file")
+		self.backend.add("file","data")
+		self.assertIsNotNone(self.backend.getFileName("file"))
+		self.assertIsNot("",self.backend.getFileName("file"))
+		print self.backend.getFileName("file")
 		
 		#invalid filename
-		bk.add("my./.file","data")
+		self.backend.add("my./.file","data")
 
 
 if __name__ == "__main__":

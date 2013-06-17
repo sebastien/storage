@@ -593,6 +593,9 @@ class DBMBackend(Backend):
 			yield self._deserialize(key=key)
 
 	def clear( self ):
+		# TODO: Not very optimized
+		for k in self.keys():
+			self.remove(k)
 		self.close()
 		self._open()
 
