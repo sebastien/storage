@@ -10,6 +10,8 @@
 
 import os, sys, json, datetime, types, shutil, time, collections
 
+__version__ = "0.5.0"
+
 # TODO: Add worker to sync
 # TODO: Add observer to observe changes to the filesystem in DirectoryBackend
 

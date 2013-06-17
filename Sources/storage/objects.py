@@ -643,17 +643,6 @@ class Relation(object):
 #
 # -----------------------------------------------------------------------------
 
-class NoCache(object):
-
-	def has_key( self, name ):
-		return False
-
-	def __setitem__(self, name, value):
-		pass
-
-	def __getitem__(self, name):
-		return None
-
 # TODO: Cache should use weak references, and only cache objects which can be
 # turned to weak references (otherwise Shove's cache will be sufficient)
 class ObjectStorage:
@@ -676,7 +665,6 @@ class ObjectStorage:
 		# FIXME: This is wrong, we should make sure the object is persisted
 		# when it is removed from cache!
 		self._cache           = weakref.WeakValueDictionary()
-		#self._cache           = NoCache()
 		self._syncQueue       = weakref.WeakValueDictionary()
 		self._lastSync        = 0
 		self._declaredClasses = {}
