@@ -86,6 +86,7 @@ class StoredObjectTest(StorableTest):
 	]
 
 	def testRecognizes(self):
+		# FIXME: Should test wide range of values
 		self.assertFalse(StoredObject.Recognizes("myData"))
 
 	def testAddIndexes(self):
@@ -102,10 +103,16 @@ class StoredObjectTest(StorableTest):
 			self.assertNotIn(i,StoredObject.INDEXES)
 
 	def testGenerateOID(self):
+		# FIXME: There's not guarantee and OID won't be equal to 0. Object ids
+		# are strings that uniquely identify object. You should test that
+		# you won't get the same id twice.
 		self.assertNotEqual(0,len(StoredObject.GenerateOID()))
 
 	def testEnsure(self):
 		oid = StoredObject.GenerateOID()
+		# FIXME: Test that the object is not there in the storage
+		# FIXME: Then ensure that object, and make sure it's a stored object
+		# instance with the same ID
 		self.assertMultiLineEqual(oid,StoredObject.Ensure(oid).oid)
 
 	def testSet(self):
@@ -117,6 +124,7 @@ class StoredObjectTest(StorableTest):
 #
 # -----------------------------------------------------------------------------
 
+# FIXME: Why an abstract storage test when there's only one concrete implementation?
 class AbstractObjectStorageTest:
 
 	VALID_OID   = [0,1,128,65536,4294967296,5L]

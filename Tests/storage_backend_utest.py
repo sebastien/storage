@@ -24,7 +24,7 @@ class AbstractBackendTest:
 
 	KEYS_VALID    = ["", u"", u"é".encode("utf-8"), "A", "a", "0", "1", "*", "&", "é", "-", "+", "_", "\\", "key", "key_1", "key1", "000", "123", "KEY" * 256, "KEY" * 1024, "KEY" * 2048, "KEY" * 4096]
 
-	KEYS_INVALID  = [Exception(), object(), datetime.datetime(2013,2,6), None, True, False]
+	KEYS_INVALID  = [list(), tuple(), dict(), set(), Exception(), object(), datetime.datetime(2013,2,6), None, True, False]
 	VALUES_VALID  = KEYS_VALID + [
 			True, False, None,
 			1, 1.0, long(12313212),
@@ -51,7 +51,6 @@ class AbstractBackendTest:
 		self.backend.clear()
 		
 	def testAdd(self):
-
 		a = self.backend.keys()
 		for i in a:
 			print (i)
