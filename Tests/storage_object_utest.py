@@ -12,6 +12,20 @@ import sys, unittest, time, datetime, random, os, shutil
 import storage
 import storage.objects
 
+class User(StoredObject):
+
+	PROPERTIES = dict(
+		name  = Type.STRING,
+		email = Type.STRING,
+	)
+
+	RELATIONS = lambda _:dict(
+		friends: [User]
+	)
+
+
+storage.register(User)
+
 # -----------------------------------------------------------------------------
 #
 # STORABLE
@@ -106,7 +120,13 @@ class StoredObjectTest(StorableTest):
 		# FIXME: There's not guarantee and OID won't be equal to 0. Object ids
 		# are strings that uniquely identify object. You should test that
 		# you won't get the same id twice.
-		self.assertNotEqual(0,len(StoredObject.GenerateOID()))
+		a = []
+		for i in range(1000):
+			oid = StoredObject.GenerateOID()
+			assert type(oid) in (str,unicode)
+			assert len(oid) > 0
+			assert oid not in a
+			a.append(oid)
 
 	def testEnsure(self):
 		oid = StoredObject.GenerateOID()

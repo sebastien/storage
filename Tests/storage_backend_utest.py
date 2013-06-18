@@ -39,7 +39,7 @@ class AbstractBackendTest:
 		]
 
 	VALUES_INVALID = [
-		object(),range(2)
+		object(), (_ for _ in range(2))
 	]
 
 	def _createBackend( self ):
