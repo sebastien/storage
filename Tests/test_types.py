@@ -68,6 +68,8 @@ DICT_NESTED         = [{"AB":{"a":2,"b":4},"CD":{"c":1,"d":3}}]
 DICT_MIX            = [{"a":(1,2,3),"b":["a",3,4.5]}]
 DICT                = DICT_DEFAULT + DICT_SIMPLE + DICT_NESTED + DICT_MIX
 
+SET                 = [set()]
+
 BOOL                = [True,False]
 
 PY_CONST            = [None,NotImplemented,Ellipsis]
@@ -91,6 +93,7 @@ ALL += STRING
 ALL += TUPLE
 ALL += LIST
 ALL += DICT
+ALL += SET
 ALL += BOOL
 ALL += PY_CONST
 ALL += EXCEPTION
