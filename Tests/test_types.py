@@ -41,11 +41,12 @@ CHAR_SPECIAL         = ['.','?','&','*','(','\\','\"']
 CHAR_FOREIGN         = ['é','ç']
 CHAR                 = CHAR_ASCII + CHAR_UNICODE + CHAR_DIGIT + CHAR_SPECIAL + CHAR_FOREIGN
 
-STRING_DEFAULT       = ["",str()]
-STRING_UNICODE       = [u"", u"é".encode("utf-8")]
+#STRING_DEFAULT       = ["",u""]
+STRING_DEFAULT       = [str()]
+STRING_UNICODE       = [u"é".encode("utf-8")]
 STRING_SHORT         = ["A", "a"]
 STRING_DIGIT         = ["0", "1","000000","01","20","0xFF"]
-STRING_SPECIAL       = ["*", "&", "é", "-", "+", "_", "\\"]
+STRING_SPECIAL       = ["*", "&", "È", "-", "+", "_", "\\"]
 STRING_LONG          = ["KEY" * 256, "KEY" * 1024, "KEY" * 2048, "KEY" * 4096]
 STRING               = STRING_DEFAULT + STRING_UNICODE + STRING_SHORT + STRING_DIGIT + STRING_SPECIAL + STRING_LONG
 
@@ -67,8 +68,33 @@ DICT_NESTED         = [{"AB":{"a":2,"b":4},"CD":{"c":1,"d":3}}]
 DICT_MIX            = [{"a":(1,2,3),"b":["a",3,4.5]}]
 DICT                = DICT_DEFAULT + DICT_SIMPLE + DICT_NESTED + DICT_MIX
 
+BOOL                = [True,False]
+
+PY_CONST            = [None,NotImplemented,Ellipsis]
+
+EXCEPTION           = [Exception]
+
 CLASS               = [datetime.timedelta()]
 
 GENERATORS          = [(_ for _ in range(20))]
 
 LAMBDA              = [lambda x: x**2]
+
+"""
+ALL = []
+ALL += INT
+ALL += LONG
+ALL += FLOAT
+ALL += FLOAT_SPECIAL
+ALL += CHAR
+ALL += STRING
+ALL += TUPLE
+ALL += LIST
+ALL += DICT
+ALL += BOOL
+ALL += PY_CONST
+ALL += EXCEPTION
+ALL += CLASS
+ALL += GENERATORS
+ALL += LAMBDA
+"""
