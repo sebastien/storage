@@ -103,6 +103,7 @@ class StoredObject(Storable):
 	@classmethod
 	def RebuildIndexes( cls ):
 		for v in cls.All():
+			# FIXME: Does not work!
 			for i in index:
 				i.clear()
 				i.add(v)

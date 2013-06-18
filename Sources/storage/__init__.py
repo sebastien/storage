@@ -633,6 +633,7 @@ class DirectoryBackend(Backend):
 
 	def __init__( self, root, pathToKey=None, keyToPath=None, writer=None, reader=None, extension=None):
 		Backend.__init__(self)
+		if not root.endswith("/"): root += "/"
 		self.root         = root
 		self.keyToPath    = keyToPath    or self._defaultKeyToPath
 		self.pathToKey    = pathToKey    or self._defaultPathToKey

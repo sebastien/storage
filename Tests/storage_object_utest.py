@@ -13,6 +13,20 @@ from test_type import *
 import storage
 from storage.objects import *
 
+class User(StoredObject):
+
+	PROPERTIES = dict(
+		name  = Type.STRING,
+		email = Type.STRING,
+	)
+
+	RELATIONS = lambda _:dict(
+		friends: [User]
+	)
+
+
+storage.register(User)
+
 # -----------------------------------------------------------------------------
 #
 # STORABLE
