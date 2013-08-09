@@ -24,8 +24,8 @@ class User(StoredObject):
 		friends: [User]
 	)
 
-
-storage.register(User)
+# FIXME: What is this?
+# storage.register(User)
 
 # -----------------------------------------------------------------------------
 #
@@ -227,22 +227,23 @@ class StoredObjectTest(StorableTest):
 			i.remove()
 			self.assertNotIn(i.getStorageKey(), StoredObject.Keys())
 		# invalid prefix
-		invalid_prefix = []
-		invalid_prefix += INT
-		invalid_prefix += LONG
-		invalid_prefix += FLOAT
-		invalid_prefix += FLOAT_SPECIAL
-		invalid_prefix += CHAR
-		invalid_prefix += STRING
-		invalid_prefix += TUPLE
-		invalid_prefix += LIST
-		invalid_prefix += DICT
-		invalid_prefix += BOOL
-		invalid_prefix += PY_CONST
-		invalid_prefix += EXCEPTION
-		invalid_prefix += CLASS
-		invalid_prefix += GENERATORS
-		invalid_prefix += LAMBDA
+		invalid_prefix = ([]
+			+ INT
+			+ LONG
+			+ FLOAT
+			+ FLOAT_SPECIAL
+			+ CHAR
+			+ STRING
+			+ TUPLE
+			+ LIST
+			+ DICT
+			+ BOOL
+			+ PY_CONST
+			+ EXCEPTION
+			+ CLASS
+			+ GENERATORS
+			+ LAMBDA
+		)
 		for prefix in invalid_prefix:
 			self.assertRaises(Exception, StoredObject.Keys, prefix)
 		self._tearDown()
@@ -294,20 +295,21 @@ class StoredObjectTest(StorableTest):
 			self.assertNotEqual(0, len(StoredObject.List()))
 			self.assertNotIn(o, StoredObject.List())
 		# invalid argument
-		invalid_args = []
-		invalid_args += FLOAT
-		invalid_args += FLOAT_SPECIAL
-		invalid_args += CHAR
-		invalid_args += STRING
-		invalid_args += TUPLE
-		invalid_args += LIST
-		invalid_args += DICT
-		invalid_args += BOOL
-		invalid_args += PY_CONST
-		invalid_args += EXCEPTION
-		invalid_args += CLASS
-		invalid_args += GENERATORS
-		invalid_args += LAMBDA
+		invalid_args = ([]
+			+ FLOAT
+			+ FLOAT_SPECIAL
+			+ CHAR
+			+ STRING
+			+ TUPLE
+			+ LIST
+			+ DICT
+			+ BOOL
+			+ PY_CONST
+			+ EXCEPTION
+			+ CLASS
+			+ GENERATORS
+			+ LAMBDA
+		)
 		for arg in invalid_args:
 			self.assertRaises(Exception, StoredObject.List(count=arg))
 			self.assertRaises(Exception, StoredObject.List(start=arg))
@@ -404,23 +406,24 @@ class StoredObjectTest(StorableTest):
 			o.set(new_dict)
 			self.assertDictEqual(new_dict,o.propreties)
 		# invalid data
-		invalid_data = []
-		invalid_data += INT
-		invalid_data += LONG
-		invalid_data += FLOAT
-		invalid_data += FLOAT_SPECIAL
-		invalid_data += CHAR
-		invalid_data += STRING
-		invalid_data += TUPLE
-		invalid_data += LIST
-		# invalid_data += DICT
-		invalid_data += SET
-		invalid_data += BOOL
-		invalid_data += PY_CONST
-		invalid_data += EXCEPTION
-		invalid_data += CLASS
-		invalid_data += GENERATORS
-		invalid_data += LAMBDA
+		invalid_data = ([]
+			+ INT
+			+ LONG
+			+ FLOAT
+			+ FLOAT_SPECIAL
+			+ CHAR
+			+ STRING
+			+ TUPLE
+			+ LIST
+			#+ DICT
+			+ SET
+			+ BOOL
+			+ PY_CONST
+			+ EXCEPTION
+			+ CLASS
+			+ GENERATORS
+			+ LAMBDA
+		)
 		self.assertRaises(Exception, o.set, invalid_data)
 		_tearDown()
 
@@ -435,23 +438,24 @@ class StoredObjectTest(StorableTest):
 			o.update(new_dict)
 			self.assertDictEqual(new_dict,o.propreties)
 		#invalid data
-		invalid_data = []
-		invalid_data += INT
-		invalid_data += LONG
-		invalid_data += FLOAT
-		invalid_data += FLOAT_SPECIAL
-		invalid_data += CHAR
-		invalid_data += STRING
-		invalid_data += TUPLE
-		invalid_data += LIST
-		#invalid_data += DICT
-		invalid_data += SET
-		invalid_data += BOOL
-		invalid_data += PY_CONST
-		invalid_data += EXCEPTION
-		invalid_data += CLASS
-		invalid_data += GENERATORS
-		invalid_data += LAMBDA
+		invalid_data = ([]
+			+ INT
+			+ LONG
+			+ FLOAT
+			+ FLOAT_SPECIAL
+			+ CHAR
+			+ STRING
+			+ TUPLE
+			+ LIST
+			#+ DICT
+			+ SET
+			+ BOOL
+			+ PY_CONST
+			+ EXCEPTION
+			+ CLASS
+			+ GENERATORS
+			+ LAMBDA
+		)
 		self.assertRaises(Exception, o.update, invalid_data)
 		_tearDown()
 
@@ -573,7 +577,5 @@ class AbstractObjectStorageTest:
 
 if __name__ == '__main__':
 	unittest.main()
-
-
 
 # EOF

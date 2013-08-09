@@ -513,6 +513,9 @@ class MemoryBackend(Backend):
 	def clear( self ):
 		self.values = {}
 
+	def export( self, **options ):
+		return self.values
+
 # -----------------------------------------------------------------------------
 #
 # DBM BACKEND

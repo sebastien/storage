@@ -5,7 +5,7 @@
 # License   : Revised BSD License                              © FFunction, inc
 # -----------------------------------------------------------------------------
 # Creation  : 13-Aug-2012
-# Last mod  : 03-Jun-2012
+# Last mod  : 09-Aug-2012
 # -----------------------------------------------------------------------------
 
 import types, json
@@ -63,7 +63,7 @@ class StorageDecoration:
 		# NOTE: We add the "web" target so that object export function can
 		# hide information that should not be communicated (ie. password)
 		self.export["target"] = "web"
-	
+
 	def listInvocables( self, storable=None ):
 		storable = storable or self.storable
 		for name in dir(storable):
@@ -178,6 +178,16 @@ class StorageServer(retro.web.Component):
 			storable.save()
 		return request.returns(storable.export(**info.getExportOptions()))
 
+	def onStorableRemove( self, storableClass, info, request, sid ):
+		storable = storableClass.Get(sid)
+		request.load()
+		data = request.params()
+		if storable:
+			storable.remove()
+			return request.returns(True)
+		else:
+			return request.notFound()
+
 	def onStorableGet( self, storableClass, info, request, sid ):
 		storable = storableClass.Get(sid)
 		# FIXME: Should have a property to tell whether we create an object
@@ -220,13 +230,15 @@ class StorageServer(retro.web.Component):
 		storable class."""
 		info               = StorageDecoration.Get(s)
 		url                = info.url or info.getName()
-		handler_create     = lambda request             : self.onStorableCreate (s, info, request)
-		handler_update     = lambda request, sid        : self.onStorableUpdate (s, info, request, sid)
-		handler_get        = lambda request, sid        : self.onStorableGet    (s, info, request, sid)
-		handler_list       = lambda request, start, end : self.onStorableList   (s, info, request, start, end)
+		handler_create     = lambda request               : self.onStorableCreate (s, info, request)
+		handler_update     = lambda request, sid          : self.onStorableUpdate (s, info, request, sid)
+		handler_get        = lambda request, sid          : self.onStorableGet    (s, info, request, sid)
+		handler_remove     = lambda request, sid          : self.onStorableRemove (s, info, request, sid)
+		handler_list       = lambda request, start, end   : self.onStorableList   (s, info, request, start, end)
 		# Generic to storable
 		self.registerHandler(handler_create, dict(GET_POST=url))
 		self.registerHandler(handler_update, dict(POST=url + "/{sid:segment}"))
+		self.registerHandler(handler_remove, dict(POST=url + "/{sid:segment}/remove"))
 		self.registerHandler(handler_get,    dict(GET =url + "/{sid:segment}"))
 		self.registerHandler(handler_list,   dict(GET =url + "/list"))
 		self.registerHandler(handler_list,   dict(GET =url + "/list/{start:int}"))
