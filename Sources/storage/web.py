@@ -193,8 +193,10 @@ class StorageServer(retro.web.Component):
 		# FIXME: Should have a property to tell whether we create an object
 		# when it does not exist
 		if not storable:
-			storable = storableClass(oid=sid)
-			#return request.notFound()
+			if request.has("strict"):
+				return request.notFound()
+			else:
+				storable = storableClass(oid=sid)
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	def onStorableInvokeMethod( self, storableClass, name, contentType, request, sid, *args, **kwargs ):
@@ -223,6 +225,7 @@ class StorageServer(retro.web.Component):
 		def iterate():
 			for _ in storable.data():
 				yield _
+		# FIXME: Should use something like respondData() (once it is implemented)
 		return request.respond(iterate(), contentType=storable.meta("contentType") or storable.meta("mimeType") or "application/x-binary")
 
 	def _generateHandlers( self, s ):
