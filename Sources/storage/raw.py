@@ -11,6 +11,9 @@
 import uuid, types, weakref, threading
 from   storage import Storable, getCanonicalName, getTimestamp, asJSON, unJSON, NOTHING
 
+# TODO: There should be a backend that stores data so that the same file
+#       uploaded multiple times would not be stored in two separate file. It
+#       should be something that would have an data store and then manage symlinks.
 # TODO: Add sync queue, review caching mechanism
 # TODO: Add revision/update meta-data
 # TODO: Add properties (for stored object compatibility)
@@ -401,7 +404,7 @@ class RawStorage:
 		suffix_len = len(self.DATA_SUFFIX)
 		for key in self.keys(types):
 			if count < 0 or (i >= start and (i < end or end < 0)):
-				if not key.endswith(self.DATA_SUFFIX) and not key.endswith(self.META_SUFFIX): 
+				if not key.endswith(self.DATA_SUFFIX) and not key.endswith(self.META_SUFFIX):
 					continue
 				key = key[:-suffix_len]
 				s = self.get(key)
