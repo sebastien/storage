@@ -197,7 +197,11 @@ class Types(object):
 	THIS     = "¤"
 
 	@staticmethod
-	def LIST(_):
+	def RANGE(start,end,type=INTEGER):
+		return "%s:%s-%s" % (type, start, end)
+
+	@staticmethod
+	def LIST(_=ANY):
 		return "[%s]" % (_)
 
 	@staticmethod
