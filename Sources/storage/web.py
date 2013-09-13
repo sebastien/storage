@@ -217,7 +217,7 @@ class StorageServer(retro.web.Component):
 		options = info.getExportOptions()
 		if end is None: end = start + self.LIST_COUNT
 		res     = [_.export(**options) for _ in storableClass.List(start=start, end=end)]
-		return request.returns(res)
+		return request.returns(dict(start=start,end=end,count=len(res),values=res))
 
 	def onRawGetData( self, storableClass, request, sid ):
 		storable = storableClass.Get(sid)
@@ -237,7 +237,7 @@ class StorageServer(retro.web.Component):
 		handler_update     = lambda request, sid          : self.onStorableUpdate (s, info, request, sid)
 		handler_get        = lambda request, sid          : self.onStorableGet    (s, info, request, sid)
 		handler_remove     = lambda request, sid          : self.onStorableRemove (s, info, request, sid)
-		handler_list       = lambda request, start, end   : self.onStorableList   (s, info, request, start, end)
+		handler_list       = lambda request, start=0, end=None : self.onStorableList   (s, info, request, start, end)
 		# Generic to storable
 		self.registerHandler(handler_create, dict(GET_POST=url))
 		self.registerHandler(handler_update, dict(POST=url + "/{sid:segment}"))
@@ -245,6 +245,7 @@ class StorageServer(retro.web.Component):
 		self.registerHandler(handler_get,    dict(GET =url + "/{sid:segment}"))
 		self.registerHandler(handler_list,   dict(GET =url + "/list"))
 		self.registerHandler(handler_list,   dict(GET =url + "/list/{start:int}"))
+		self.registerHandler(handler_list,   dict(GET =url + "/list/{start:int}:"))
 		self.registerHandler(handler_list,   dict(GET =url + "/list/{start:int}:{end:int}"))
 		# Lists the invocables defined in the storable and bind URLs
 		for name, meta in info.listInvocables():

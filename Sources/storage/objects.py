@@ -8,6 +8,8 @@
 # Last mod  : 17-Apr-2013
 # -----------------------------------------------------------------------------
 
+# TODO: Add import/create/update filters that will check and normalize the input data
+
 # TODO: Review sync queue and caching, which don't seem to be 100% consitent
 # TODO: Add sync queue, review caching mechanism
 # TODO: Add revision/update meta-data
@@ -817,12 +819,16 @@ class ObjectStorage:
 
 	# FIXME: Should be updated according to raw storage
 	def list( self, storedObjectClasses=None, count=-1, start=0, end=None):
-		"""Lists (iterates) the stored objects belonging to the given class"""
+		"""Lists (iterates) the stored objects belonging to the given class. Note that
+		there is no guaranteed ordering in the keys, so this might return different
+		results depending on how many keys there are."""
 		end = start + count if end is None else end
 		i   = 0
 		for key in self.keys(storedObjectClasses):
-			if count < 0 or (i >= start and i < end):
-				yield self.get(key)
+			if count != 0:
+				if (i >= start and i < end):
+					if count > 0: count -= 1
+					yield self.get(key)
 			i += 1
 
 	def isCached( self, key ):
