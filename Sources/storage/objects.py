@@ -28,8 +28,8 @@
 
 # FIXME: How to update the objects when the db has changed locally
 
-import time, threading, json, weakref, types, datetime
-from   storage import getCanonicalName, asPrimitive, asJSON, unJSON, Storable, restore
+import time, threading, json, weakref, types, datetime, traceback
+from   storage import Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, Storable, restore
 
 __pychecker__ = "unusednames=options"
 
@@ -175,7 +175,7 @@ class StoredObject(Storable):
 		"""Returns the storage key associated with the given oid of this class."""
 		if isinstance(oid, StoredObject): oid = oid.oid
 		if cls.COLLECTION:
-			return cls.COLLECTION + "." + oid
+			return str(cls.COLLECTION) + "." +  str(oid)
 		else:
 			cls.COLLECTION = cls.__name__.split(".")[-1]
 			return cls.StorageKey(oid)
@@ -732,7 +732,9 @@ class ObjectStorage:
 			self.lock.release()
 		except Exception, e:
 			self.lock.release()
-			raise e
+			exception_format = repr(traceback.format_exc()).split("\\n")
+			error_msg = u"\n|".join(exception_format[:-1])
+			raise Exception(error_msg)
 		# We update the indexes
 		if hasattr(storedObject, "INDEXES"):
 			for index in (storedObject.INDEXES or ()):

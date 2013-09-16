@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 
 import types, weakref, threading
-from   storage import Storable, Indetifier, getCanonicalName, getTimestamp, asJSON, unJSON, NOTHING
+from   storage import Storable, Identifier, getCanonicalName, getTimestamp, asJSON, unJSON, NOTHING
 
 # TODO: There should be a backend that stores data so that the same file
 #       uploaded multiple times would not be stored in two separate file. It
@@ -115,7 +115,7 @@ class StoredRaw(Storable):
 		"""Returns the storage key associated with the given oid of this class."""
 		if isinstance(oid, StoredRaw): oid = oid.oid
 		if cls.COLLECTION:
-			return cls.COLLECTION + "." + oid
+			return str(cls.COLLECTION) + "." +  str(oid)
 		else:
 			cls.COLLECTION = cls.__name__.split(".")[-1]
 			return cls.StorageKey(oid)

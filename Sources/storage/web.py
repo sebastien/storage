@@ -251,6 +251,7 @@ class StorageServer(retro.web.Component):
 		for name, meta in info.listInvocables():
 			def wrap(name, meta):
 				invoke_url, restrict, methods, contentType = meta
+				# TODO: What about restrict?
 				handler = lambda request, sid, *args, **kwargs: self.onStorableInvokeMethod( s, name, contentType, request, sid, *args, **kwargs )
 				self.registerHandler(handler,    dict(GET=url + "/{sid:segment}/" + invoke_url))
 			wrap(name, meta)
