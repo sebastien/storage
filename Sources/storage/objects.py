@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 14-Jul-2008
-# Last mod  : 17-Apr-2013
+# Last mod  : 16-Sep-2013
 # -----------------------------------------------------------------------------
 
 # TODO: Add import/create/update filters that will check and normalize the input data
@@ -28,7 +28,7 @@
 
 # FIXME: How to update the objects when the db has changed locally
 
-import time, threading, json, uuid, weakref, types, datetime
+import time, threading, json, weakref, types, datetime
 from   storage import getCanonicalName, asPrimitive, asJSON, unJSON, Storable, restore
 
 __pychecker__ = "unusednames=options"
@@ -76,6 +76,7 @@ class StoredObject(Storable):
 	a storage proxy that implements you specific strategy.
 	"""
 
+	OID_GENERATOR         = Identifier.Stamp
 	SKIP_EXTRA_PROPERTIES = False
 	COLLECTION            = None
 	STORAGE               = None
@@ -113,7 +114,7 @@ class StoredObject(Storable):
 	@classmethod
 	def GenerateOID( cls ):
 		"""Generates a new object ID for this class"""
-		return str(uuid.uuid4())
+		return cls.OID_GENERATOR()
 
 	@classmethod
 	def StoragePrefix( cls ):

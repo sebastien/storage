@@ -5,12 +5,13 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 13-May-2013
+# Last mod  : 16-Sep-2013
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
+import uuid, calendar, random
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 # TODO: Add worker to sync
 # TODO: Add observer to observe changes to the filesystem in DirectoryBackend
@@ -144,6 +145,66 @@ def parseTimestamp( t ):
 	mn    = t / 10**2  ; t -= mn    * 10 ** 2
 	sec   = t
 	return (year, month, day, hour, mn, sec, 0,0,0)
+
+# -----------------------------------------------------------------------------
+#
+# IDENTIFIER
+#
+# -----------------------------------------------------------------------------
+
+class Identifier(object):
+
+	NODE_ID    = 0
+	TIME_BASE  = calendar.timegm(datetime.datetime(2000, 1, 1, 0, 0, 0, 0).utctimetuple())
+
+	@classmethod
+	def UUID( cls ):
+		"""Returns a UUI4"""
+		return str(uuid.uuid4())
+
+	@classmethod
+	def Stamp( cls, rand=3, nodes=4 ):
+		"""Returns an 64-bit integer timestamp that is made like this.
+
+		> TTTTTTTTTTTTTTT RRR NNNN
+		> |               |   |
+		> |               |   Node ID [0-9999]
+		> |               Random [0-999]
+		> Timestamp since TIMEBASE
+
+		The `rand` and `nodes` parameters tell how many `R` and `N` there
+		wil be in the numbers.
+		"""
+		base = long((time.time() - cls.TIME_BASE)) * (10 ** (nodes + rand))
+		r    = random.randint(0,(10**rand)-1)      * (10 ** (nodes))
+		return base + r + cls.NODE_ID
+
+	@classmethod
+	def Timestamp( cls, rand=3, nodes=4 ):
+		"""A version of the `stamp` that's more readable but slightly longer.
+
+		> YYYYMMDDHHMMSSMMMMMM RRR NNNN
+		> |                    |   |
+		> |                    |   Node ID [0-9999]
+		> |                    Random [0-999]
+		> Timestamp since TIMEBASE
+
+		"""
+		now = datetime.datetime.now()
+		date = (
+			now.microsecond          + \
+			now.second      * 10**6  + \
+			now.minute      * 10**8  + \
+			now.hour        * 10**10 + \
+			now.day         * 10**12 + \
+			now.month       * 10**14 + \
+			now.year        * 10**16
+		)
+		return (
+			cls.NODE_ID                                               + \
+			(random.randint(0,(10**rand)-1) * (10**nodes))            + \
+			(date                           * (10 ** (nodes + rand)))
+		)
 
 # -----------------------------------------------------------------------------
 #

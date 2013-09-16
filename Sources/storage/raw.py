@@ -5,11 +5,11 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 10-Jun-2013
+# Last mod  : 16-Sep-2013
 # -----------------------------------------------------------------------------
 
-import uuid, types, weakref, threading
-from   storage import Storable, getCanonicalName, getTimestamp, asJSON, unJSON, NOTHING
+import types, weakref, threading
+from   storage import Storable, Indetifier, getCanonicalName, getTimestamp, asJSON, unJSON, NOTHING
 
 # TODO: There should be a backend that stores data so that the same file
 #       uploaded multiple times would not be stored in two separate file. It
@@ -47,13 +47,14 @@ Allows to store raw data and its meta-information
 
 class StoredRaw(Storable):
 
-	RESERVED    = ("type", "timestamp", "oid")
-	COLLECTION  = None
-	STORAGE     = None
+	OID_GENERATOR = Identifier.Stamp
+	RESERVED      = ("type", "timestamp", "oid")
+	COLLECTION    = None
+	STORAGE       = None
 
 	@classmethod
-	def GenerateRID( cls ):
-		return str(uuid.uuid4())
+	def GenerateOID( cls ):
+		return cls.OID_GENERATOR()
 
 	@classmethod
 	def Import( cls, meta, data=None ):
@@ -131,7 +132,7 @@ class StoredRaw(Storable):
 		if meta.has_key("timestamp"): self.timestamp = meta["timestamp"]
 		else: self.timestamp = getTimestamp()
 		if meta.has_key("oid"): self.oid = meta["oid"]
-		else: self.oid       = StoredRaw.GenerateRID()
+		else: self.oid       = StoredRaw.GenerateOID()
 		self._meta           = {}
 		self._hasDataChanged = True
 		self._data           = data
