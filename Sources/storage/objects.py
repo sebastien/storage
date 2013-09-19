@@ -594,6 +594,13 @@ class Relation(object):
 		except StopIteration, e:
 			return None
 
+	def has( self, objectOrID ):
+		oid = objectOrID.oid if isinstance(objectOrID, StoredObject) else objectOrID
+		for v in self.get(resolve=False):
+			if isinstance(v, dict) and "oid" in v and "type" in v and v["oid"] == oid:
+				return True
+		return False
+
 	def list( self ):
 		return self.get(resolve=True)
 

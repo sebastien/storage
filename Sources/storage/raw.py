@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 16-Sep-2013
+# Last mod  : 17-Sep-2013
 # -----------------------------------------------------------------------------
 
 import types, weakref, threading
@@ -293,7 +293,7 @@ class RawStorage:
 			if not prefix:
 				prefix = storedRawOrKey.__class__.__name__.split(".")[-1]
 				self._classPrefix[storedRawOrKey.__class__] = prefix
-			key =  prefix + "." + storedRawOrKey.oid
+			key =  str(prefix) + "." + str(storedRawOrKey.oid)
 		else:
 			key = storedRawOrKey
 		key_data = key + self.DATA_SUFFIX
