@@ -204,6 +204,15 @@ class Index(object):
 		for _ in (self.STORAGE.get(key) or ()):
 			if _ is not None: yield self._restoreValue(_)
 
+	def one( self, key, index=0 ):
+		i = 0
+		for _ in (self.STORAGE.get(key) or ()):
+			if _ is not None:
+				if i == index:
+					return self._restoreValue(_)
+				else:
+					i += 1
+
 	def has( self, key ):
 		try:
 			next(self(key))
