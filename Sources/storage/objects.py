@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 14-Jul-2008
-# Last mod  : 16-Sep-2013
+# Last mod  : 26-Sep-2013
 # -----------------------------------------------------------------------------
 
 # TODO: Add import/create/update filters that will check and normalize the input data
@@ -593,6 +593,13 @@ class Relation(object):
 			return self.get(resolve=True, start=index).next()
 		except StopIteration, e:
 			return None
+
+	def isEmpty( self ):
+		try:
+			self.get(resolve=False, start=index).next()
+			return False
+		except StopIteration, e:
+			return True
 
 	def has( self, objectOrID ):
 		oid = objectOrID.oid if isinstance(objectOrID, StoredObject) else objectOrID
