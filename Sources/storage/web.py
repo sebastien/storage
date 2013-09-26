@@ -222,11 +222,7 @@ class StorageServer(retro.web.Component):
 	def onRawGetData( self, storableClass, request, sid ):
 		storable = storableClass.Get(sid)
 		assert isinstance(storable, StoredRaw)
-		def iterate():
-			for _ in storable.data():
-				yield _
-		# FIXME: Should use something like respondData() (once it is implemented)
-		return request.respond(iterate(), contentType=storable.meta("contentType") or storable.meta("mimeType") or "application/x-binary")
+		return request.respondFile(storable.path(), contentType=storable.meta("contentType") or storable.meta("mimeType") or "application/x-binary")
 
 	def _generateHandlers( self, s ):
 		"""Internal method that generates HTTP handlers for the given
