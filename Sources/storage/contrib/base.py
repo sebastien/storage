@@ -84,7 +84,7 @@ class Image(StoredRaw):
 # the preview (compact)
 @http("video")
 class Video(StoredRaw):
-	
+
 	FIELDS = dict(
 		dimension    = Types.TUPLE(Types.INTEGER, Types.INTEGER),
 		duration     = Types.INTEGER,
@@ -110,7 +110,7 @@ class Video(StoredRaw):
 	# and then: Index.add(storable)
 	# and then: Index.update(storable)
 	# and then: Index.remove(storable)
-	# remove the changed 
+	# remove the changed
 	# indexes will also have to be persistent
 
 	@http("preview", contentType="image/jpg; charset=binary")
@@ -145,7 +145,7 @@ class Video(StoredRaw):
 	@http("formats")
 	def getAlternativeFormats( self ):
 		"""Returns a map of `FORMAT`->`RID` listing the different
-		formats for the given video. The original video is returned as 
+		formats for the given video. The original video is returned as
 		`original` format, while the alternative videos are returned by
 		their format.
 
@@ -308,7 +308,7 @@ class Interface:
 		return RawStorage(self.RAW_BACKEND(prefix)).use(*[_ for _ in self.CLASSES if issubclass(_, StoredRaw)])
 
 	def _createIndexes( self, prefix ):
-		return Indexes(self.INDEX_BACKEND, prefix).use(*[_ for _ in self.CLASSES if issubclass(_, StoredRaw)])
+		return Indexes(self.INDEX_BACKEND, prefix).use(*[_ for _ in self.CLASSES if issubclass(_, Storable)])
 
 	def _createStorageServer( self, prefix ):
 		return StorageServer(prefix).use(*[_ for _ in self.CLASSES if StorageDecoration.Has(_)])
