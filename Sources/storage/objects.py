@@ -568,9 +568,9 @@ class Relation(object):
 						# and actual storable
 						if not isinstance(v, Storable):
 							if type(v) is dict:
-								yield self.parentClass.STORAGE._import(v)
+								yield relation_class.Import(v)
 							else:
-								yield self.parentClass.STORAGE.get(relation_class.StorageKey(v))
+								yield relation_class.Get(v)
 						else:
 							yield v
 					else:
