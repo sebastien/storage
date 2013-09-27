@@ -6,10 +6,10 @@
 # License   : Proprietary                                      © FFunction, inc
 # -----------------------------------------------------------------------------
 # Creation  : 03-Jun-2012
-# Last mod  : 03-Jun-2013
+# Last mod  : 27-Sep-2013
 # -----------------------------------------------------------------------------
 
-from storage         import Types, DirectoryBackend, DBMBackend
+from storage         import Types, DirectoryBackend, DBMBackend, Storable
 from storage.objects import StoredObject, ObjectStorage
 from storage.raw     import StoredRaw,    RawStorage
 from storage.index   import Indexing, Indexes
