@@ -565,8 +565,8 @@ class Relation(object):
 				if i >= start and (limit == -1 or i < limit):
 					if resolve:
 						# If we resolve the value, we make sure to give
-						# and actual stored object
-						if not isinstance(v, StoredObject):
+						# and actual storable
+						if not isinstance(v, Storable):
 							if type(v) is dict:
 								yield self.parentClass.STORAGE._import(v)
 							else:
@@ -574,10 +574,10 @@ class Relation(object):
 						else:
 							yield v
 					else:
-						# If we do not resovle, we make sure to give a
+						# If we do not resolve, we make sure to give a
 						# (compact) representation of the value, or the
 						# value itself
-						if isinstance(v, StoredObject):
+						if isinstance(v, Storable):
 							yield v.export(depth=depth)
 						# NOTE: Here we only export the minimum fields so that
 						# we're explicit that this is a reference and not the
@@ -633,7 +633,10 @@ class Relation(object):
 		return [asPrimitive(_, **o) for _ in self.get(resolve=options.get("resolve", True))]
 
 	def __len__( self ):
-		return len(self.values)
+		if self.values:
+			return len(self.values)
+		else:
+			return 0
 
 	def __call__( self, *args, **kwargs ):
 		return self.get(*args, **kwargs)
