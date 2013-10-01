@@ -189,7 +189,7 @@ class StoredObject(Storable):
 		return cls.COLLECTION
 
 	@classmethod
-	def Import( cls, properties, skipExtraProperties=None ):
+	def Import( cls, properties, skipExtraProperties=None, updateProperties=False ):
 		"""Turns the given primitive export into an instance of this class.
 		Properties can be either a primtive export or a StoredObject instance,
 		in which case this function will just return its parameter.
@@ -208,7 +208,13 @@ class StoredObject(Storable):
 				obj = cls.Get(oid)
 				# If it exists, we update its properties
 				if obj:
-					obj.set(properties, skipExtraProperties=skipExtraProperties)
+					# FIXME: I don't see the use case for an `updateProperties`, but am
+					# leaving here as an option. The default behaviour is that we should
+					# only update the properties if the object does not exist in the
+					# storage. If it does, then we assume the storage's version is the
+					# most up to date.
+					if updateProperties:
+						obj.set(properties, skipExtraProperties=skipExtraProperties)
 					return obj
 				# Otherwise we create a new one
 				else:
@@ -626,6 +632,7 @@ class Relation(object):
 
 	def export( self, **options ):
 		o = {} ; o.update(options)
+		# FIXME: For serialization we want relations to be shallow (oid/type)
 		# We change depth as we want relations to be transparent
 		if "depth" in o: o["depth"] += 1
 		# FIXME: We have to be very clear about the resolve here -- is it a
@@ -703,20 +710,8 @@ class ObjectStorage:
 		self.lock.release()
 		return self
 
-	def _import( self, oidAndClassDict ):
-		c   = oidAndClassDict["type"]
-		oid = oidAndClassDict["oid"]
-		assert c in self._declaredClasses, "Class not declared in storage: %s" % (c)
-		result = self.get(self._declaredClasses[c].StorageKey(oid))
-		# When we import, we'll try to get the object from the DB first, but
-		# if not, we'll import it directly (ie. the object won't be saved in
-		# the storage until save() is called)
-		if not result:
-			return self._declaredClasses[c].Import(oidAndClassDict)
-		else:
-			return result
-
-	def restore( self, exportedStoredObject ):
+	def _restore( self, exportedStoredObject ):
+		# NOTE: We call restore only when the object was not already in cache
 		# NOTE: Exported stored object  is expected to be a dict as give
 		# by StoredObject.export
 		assert type(exportedStoredObject) is dict, "Expected a dictionary as exported by StoredObject.export(), got a %s" % (type(exportedStoredObject))
@@ -725,9 +720,12 @@ class ObjectStorage:
 		# FIXME: Should check if the exported stored object is in cache first!
 		actual_class = self._declaredClasses.get(oclass)
 		if actual_class:
-			new_object       = actual_class(oid, exportedStoredObject, restored=True)
-			key              = new_object.getStorageKey()
-			self._cache[key] = new_object
+			key        = actual_class.StorageKey(oid)
+			assert key not in self._cache
+			# We instanciate the object, which will then be available in the cache, as
+			# the constructor calls Storage.register.
+			new_object = actual_class(oid, exportedStoredObject, restored=True)
+			assert key in self._cache
 			return new_object
 		else:
 			raise Exception("Class not registered in ObjectStorage: %s" % (oclass))
@@ -794,7 +792,7 @@ class ObjectStorage:
 			value = self.backend.get(key)
 			if value:
 				value = self.deserializeObjectExport(value)
-				value = self.restore(value)
+				value = self._restore(value)
 				if not (value is None):
 					try:
 						self._cache[key] = value
