@@ -602,7 +602,7 @@ class Relation(object):
 
 	def isEmpty( self ):
 		try:
-			self.get(resolve=False, start=index).next()
+			self.get(resolve=False).next()
 			return False
 		except StopIteration, e:
 			return True
