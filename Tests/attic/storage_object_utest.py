@@ -1,4 +1,5 @@
 # encoding:UTF-8
+# -----------------------------------------------------------------------------
 # Project   : FFCTN/Storage
 # -----------------------------------------------------------------------------
 # Author    : Sebastien Pierre                            <sebastien@ffctn.com>
@@ -9,9 +10,9 @@
 # -----------------------------------------------------------------------------
 
 import sys, unittest, time, datetime, random, os, shutil
-from test_type import *
+from   test_type import *
 import storage
-from storage.objects import *
+from   storage.objects import *
 
 class User(StoredObject):
 
@@ -57,7 +58,7 @@ class StorableTest:
 	def test_Recognizes( self ):
 		# setup
 		valid_data   = DICT
-		
+
 		invalid_data = []
 		invalid_data += INT
 		invalid_data += LONG
@@ -150,7 +151,7 @@ class StoredObjectTest(StorableTest):
 
 	def _createStorage(self):
 		raise NotImplementedError
-	
+
 	def _setUp(self):
 		StoredObject.STORAGE = _createStorage()
 		StoredObject.STORAGE.register(StoredObject)
