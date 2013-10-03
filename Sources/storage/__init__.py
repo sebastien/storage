@@ -5,13 +5,13 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 16-Sep-2013
+# Last mod  : 03-Oct-2013
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
 import uuid, calendar, random
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 # TODO: Add worker to sync
 # TODO: Add observer to observe changes to the filesystem in DirectoryBackend
@@ -118,19 +118,39 @@ def getCanonicalName( aClass ):
 BY = collections.namedtuple("PERIOD",("YEAR", "MONTH", "DAY", "HOUR", "MINUTE"))(10 ** 10, 10 ** 8, 10 ** 6, 10 ** 4, 10 ** 2)
 
 def getTimestamp(date=None, period=None):
-	"""Returns a number that is like: 'YYYYMMDDhhmmss' representing the
+	"""Returns a number that is like: 'YYYYMMDDhhmmssuuuuuu' representing the
 	current date in UTC timezone. This number preserves the ordering an allows
 	to easily identify the date (or at least easier than a timestamp
 	since EPOCH)."""
 	# FIXME: Should return UTC datetime
 	if date is None:
 		now  = datetime.datetime.utcnow()
-		date = tuple(now.utctimetuple())
-	elif isinstance(date, datetime.datetime):
-		date = tuple(date.utctimetuple())
+	if isinstance(date, datetime.datetime):
+		date = (
+			now.year,
+			now.month,
+			now.day,
+			now.hour,
+			now.minute,
+			now.second,
+			now.microsecond
+		)
 	if type(date) in (tuple, list):
-		year, month, day, hour, mn, sec, _, _, _ = date
-		date = sec + 10**2 * mn + 10**4 * hour + 10**6 * day + 10**8 * month + 10**10 * year
+		if len(date) == 9:
+			# This is a timetuple
+			year, month, day, hour, mn, sec, _, _, _ = date
+			msec = 0
+		else:
+			year, month, day, hour, mn, sec, msec = date
+		date = (
+			msec             + \
+			sec     * 10**6  + \
+			mn      * 10**8  + \
+			hour    * 10**10 + \
+			day     * 10**12 + \
+			month   * 10**14 + \
+			year    * 10**16
+		)
 	if   period is None:
 		return date
 	else:
@@ -138,12 +158,12 @@ def getTimestamp(date=None, period=None):
 
 def parseTimestamp( t ):
 	"""Returns the timestamp as an UTC time-tuple"""
-	year  = t / 10**10 ; t -= year  * 10 ** 10
-	month = t / 10**8  ; t -= month * 10 ** 8
-	day   = t / 10**6  ; t -= day   * 10 ** 6
-	hour  = t / 10**4  ; t -= hour  * 10 ** 4
-	mn    = t / 10**2  ; t -= mn    * 10 ** 2
-	sec   = t
+	year  = t / 10**16 ; t -= year  * 10 ** 16
+	month = t / 10**14 ; t -= month * 10 ** 14
+	day   = t / 10**12 ; t -= day   * 10 ** 12
+	hour  = t / 10**10 ; t -= hour  * 10 ** 10
+	mn    = t / 10**8  ; t -= mn    * 10 ** 8
+	sec   = t / 10**6  ; t -= mn    * 10 ** 6
 	return (year, month, day, hour, mn, sec, 0,0,0)
 
 # -----------------------------------------------------------------------------
@@ -190,16 +210,7 @@ class Identifier(object):
 		> Timestamp since TIMEBASE
 
 		"""
-		now = datetime.datetime.now()
-		date = (
-			now.microsecond          + \
-			now.second      * 10**6  + \
-			now.minute      * 10**8  + \
-			now.hour        * 10**10 + \
-			now.day         * 10**12 + \
-			now.month       * 10**14 + \
-			now.year        * 10**16
-		)
+		date = getTimestamp ()
 		return (
 			cls.NODE_ID                                               + \
 			(random.randint(0,(10**rand)-1) * (10**nodes))            + \
