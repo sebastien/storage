@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 14-Jul-2008
-# Last mod  : 26-Sep-2013
+# Last mod  : 03-Oct-2013
 # -----------------------------------------------------------------------------
 
 # TODO: Add import/create/update filters that will check and normalize the input data
@@ -29,7 +29,7 @@
 # FIXME: How to update the objects when the db has changed locally
 
 import time, threading, json, weakref, types, datetime, traceback
-from   storage import Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, Storable, restore
+from   storage import Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, Storable, restore, getTimestamp
 
 __pychecker__ = "unusednames=options"
 
@@ -83,7 +83,7 @@ class StoredObject(Storable):
 	PROPERTIES            = {}
 	COMPUTED_PROPERTIES   = ()
 	RELATIONS             = {}
-	RESERVED              = ("type", "oid", "timestamp")
+	RESERVED              = ("type", "oid", "updates")
 	INDEXES               = None
 
 	@classmethod
@@ -272,10 +272,13 @@ class StoredObject(Storable):
 		if not self.__class__.HAS_DESCRIPTORS: self.__class__._GenerateDescriptors(self)
 		self._properties = {}
 		self._relations  = {}
+		self._updates    = {}
 		self._isNew      = restored
 		self.set(properties, skipExtraProperties=skipExtraProperties)
 		self.set(kwargs, skipExtraProperties=skipExtraProperties)
 		if self.STORAGE: self.STORAGE.register(self, restored=restored)
+		# We make sure that there's a timestamp for the object
+		if "oid" not in self._updates: self._updates["oid"] = getTimestamp()
 		assert self.getStorageKey(), "Object must have a key once created"
 		self.init()
 
@@ -291,7 +294,10 @@ class StoredObject(Storable):
 				elif name in self.RELATIONS:
 					self.setRelation(name, value)
 				elif name in self.RESERVED:
-					pass
+					if name == "updates":
+						# If the reserved keyword is "updates", we refresh the updates
+						for k in value:
+							self._updates[k] = max(value.get(k, -1), self._updates.get(k, -1))
 				elif name in self.COMPUTED_PROPERTIES:
 					pass
 				elif skipExtraProperties:
@@ -310,6 +316,10 @@ class StoredObject(Storable):
 		assert name in self.PROPERTIES, "Property `%s` not one of: %s" % (name, self.PROPERTIES.keys() + self.RELATIONS.keys())
 		if not name in self._properties: self._properties[name] = Property(name)
 		self._properties[name].set(value)
+		if not self._isNew:
+			# We update the `updates` map only if the object is not new (has
+			# been registered)
+			self._updates[name] = self._updates["oid"] = max(getTimestamp(), self._updates[name])
 		return self
 
 	def setRelation( self, name, value ):
@@ -336,7 +346,6 @@ class StoredObject(Storable):
 			return self._relations[name]
 		else:
 			raise Exception("Property %s.%s is not declared in RELATIONS" % (self.__class__.__name__, name))
-
 	def getID( self ):
 		self.oid
 
@@ -413,7 +422,7 @@ class StoredObject(Storable):
 	def export( self, **options ):
 		"""Returns a dictionary representing this object. By default, it
 		just returns the object id (`oid`) and its class (`class`)."""
-		res   = {"oid": self.oid, "type":getCanonicalName(self.__class__)}
+		res   = {"oid": self.oid, "type":getCanonicalName(self.__class__), "updates":self._updates}
 		depth = 1
 		if "depth" in options: depth = options["depth"]
 		if depth > 0:
