@@ -319,7 +319,7 @@ class StoredObject(Storable):
 		if not self._isNew:
 			# We update the `updates` map only if the object is not new (has
 			# been registered)
-			self._updates[name] = self._updates["oid"] = max(getTimestamp(), self._updates[name])
+			self._updates[name] = self._updates["oid"] = max(getTimestamp(), self._updates.get(name, -1))
 		return self
 
 	def setRelation( self, name, value ):
@@ -910,6 +910,11 @@ class ObjectStorage:
 			self._declaredClasses[getCanonicalName(c)] = c
 			Storable.DeclareClass(c)
 		return self
+
+	def release( self ):
+		for k,c in self._declaredClasses.items():
+			c.STORAGE = None
+		self._declaredClasses = {}
 
 	def _getStoragePrefix( self, storedObjectClasses=None ):
 		"""Returns the list of prefixes for keys that are used to store objects

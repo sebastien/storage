@@ -286,6 +286,11 @@ class RawStorage:
 			Storable.DeclareClass(c)
 		return self
 
+	def release( self ):
+		for k,c in self._declaredClasses.items():
+			c.STORAGE = None
+		self._declaredClasses = {}
+
 	def getStorageKeys( self, storedRawOrKey ):
 		if isinstance(storedRawOrKey, StoredRaw):
 			key = storedRawOrKey.oid

@@ -1,3 +1,13 @@
+# -----------------------------------------------------------------------------
+# Project   : FFCTN/Storage
+# -----------------------------------------------------------------------------
+# Author    : Sebastien Pierre                            <sebastien@ffctn.com>
+# License   : BSD License
+# -----------------------------------------------------------------------------
+# Creation  : 17-Jun-2013
+# Last mod  : 03-Oct-2013
+# -----------------------------------------------------------------------------
+
 import unittest, os, shutil, sys, json, random
 from   storage         import DirectoryBackend, DBMBackend, MemoryBackend, Types
 from   storage.objects import StoredObject, ObjectStorage
@@ -8,10 +18,12 @@ A collection of tests that exercise the storage.index module
 """
 
 def _len( v ):
+	"""Returns the length of the value if it is a tuple, or 1 otherwise"""
 	if type(v) in (tuple, list): return len(v)
 	else: return len(tuple(v))
 
 def noneIfEmpty(v):
+	"""Returns none if the given list is empty."""
 	if v:
 		if type(v) in (tuple, list): return v
 		else: return noneIfEmpty(tuple(v))
@@ -105,7 +117,7 @@ class StoredObjectIndexTest(unittest.TestCase):
 
 	def setUp( self ):
 		self.indexStorage  = IndexStorage(MemoryBackend(), MemoryBackend())
-		self.index         = Index(self.indexStorage, Value.ByValue, lambda _:_) 
+		self.index         = Index(self.indexStorage, Value.ByValue, lambda _:_)
 		self.objectStorage = ObjectStorage(MemoryBackend()).use(Value)
 		# We add the index to the stored type, so that whenever the object will
 		# be stored, it will be indexed
@@ -165,7 +177,7 @@ class DBMStorageTest(unittest.TestCase):
 		self.index.save()
 		self.assertEqual(_len(self.index.get(0)), 100)
 		for i in range(1,10): self.assertIsNone(noneIfEmpty(self.index.get(i)))
-	
+
 	def tearDown( self ):
 		self.indexStorage.sync()
 		self.indexStorage.forwardBackend.close()
@@ -197,9 +209,9 @@ class DBMStorageTest(unittest.TestCase):
 			if os.path.exists(f):
 				os.unlink(f)
 			assert not os.path.exists(f)
-# 
-# 
-# 
+#
+#
+#
 if __name__ == "__main__":
 	unittest.main()
 
