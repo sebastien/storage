@@ -5,13 +5,13 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 03-Oct-2013
+# Last mod  : 15-Oct-2013
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
 import uuid, calendar, random
 
-__version__ = "0.6.0"
+__version__ = "0.7.1"
 
 # TODO: Add worker to sync
 # TODO: Add observer to observe changes to the filesystem in DirectoryBackend
@@ -411,6 +411,8 @@ class Storable(object):
 #  format=
 #  size=
 
+# FIXME: Maybe add a notification system so that storages can be notified
+# of changes to specific keys.
 class Backend(object):
 	"""Backends are key-value stores, where you can ADD, UPDATE and REMOVE
 	data given a specific key. Keys and values are combination of primitive
@@ -427,6 +429,11 @@ class Backend(object):
 	of the data. This should be used if you really want to make sure that
 	the data is commited to the underlying storage."""
 
+	HAS_READ   = True
+	HAS_WRITE  = True
+	HAS_STREAM = False
+	HAS_FILE   = False
+
 	def __init__( self ):
 		pass
 
@@ -442,6 +449,10 @@ class Backend(object):
 		"""Removes the given data to the storage. In most cases, the
 		metric won't be actually removed, but just invalidated."""
 		raise Exception("Backend.remove not implemented")
+
+	def clear( self ):
+		"""Removes all the data from this backend."""
+		raise Exception("Backend.clear not implemented")
 
 	def sync( self ):
 		"""Explicitly ask the back-end to synchronize. Depending on the
@@ -463,9 +474,6 @@ class Backend(object):
 
 	def keys( self, collection=None ):
 		raise Exception("Backend.keys not implemented")
-
-	def clear( self ):
-		raise Exception("Backend.clear not implemented")
 
 	def path( self, key):
 		"""Returns the physical path of the file used to store
@@ -504,7 +512,17 @@ class MultiBackend( Backend ):
 	for instance)."""
 
 	def __init__( self, *backends ):
-		self.backends = backends
+		self.backends       = backends
+		self._readBackend   = None
+		self._fileBackend   = None
+		self._streamBackend = None
+		for b in self.backends:
+			if b.HAS_READ:
+				self._readBackend = b
+			if b.HAS_FILE:
+				self._fileBackend = b
+			if b.HAS_STREAM:
+				self._streamBackend = b
 
 	def add( self, key, data ):
 		for backend in self.backends:
@@ -523,19 +541,37 @@ class MultiBackend( Backend ):
 			backend.sync()
 
 	def has( self, key ):
-		for backend in self.backends:
-			res = backend.has(key)
-			if res:
-				return res
-		return None
+		return self._readBackend.has(key)
 
 	def list( self, key ):
-		assert False, "Not implemented"
-		# for backend in self.backends:
-		# 	res = backend.get(key)
-		# 	if res:
-		# 		return res
-		# return None
+		return self._readBackend.list(key)
+
+	def has( self, key ):
+		return self._readBackend.has(key)
+		raise Exception("Backend.has not implemented")
+
+	def get( self, key ):
+		return self._readBackend.get(key)
+
+	def list( self, key=None ):
+		return self._readBackend.list(key)
+
+	def count( self, key=None ):
+		return self._readBackend.count(key)
+
+	def keys( self, collection=None ):
+		return self._readBackend.keys(key)
+
+	def path( self, key):
+		"""Returns the physical path of the file used to store
+		the key, if any."""
+		return self._fileBackend.path(key)
+		raise Exception("Backend.path not implemented")
+
+	def stream( self, key, size=None ):
+		"""Streams the data at the given key by chunks of given `size`"""
+		return self._streamBackend.path(key, size)
+		raise Exception("Backend.stream not implemented")
 
 # -----------------------------------------------------------------------------
 #
@@ -706,7 +742,8 @@ class DirectoryBackend(Backend):
 	keys to specific file system paths, allowing to write custom path-mapping
 	schemes."""
 
-
+	HAS_FILE   = True
+	HAS_STREAM = True
 	FILE_EXTENSION = ".json"
 	DEFAULT_STREAM_SIZE = 1024 * 100
 
