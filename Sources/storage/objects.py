@@ -745,16 +745,21 @@ class ObjectStorage:
 		try:
 		#if True:
 			key = storedObject.getStorageKey()
-			self.backend.add(key, self.serializeObjectExport(storedObject.export()))
+			exported_object = self.serializeObjectExport(storedObject.export())
+			if creation:
+				self.backend.add(key, exported_object)
+			else:
+				self.backend.update(key, exported_object)
 			try:
 				self._cache[key] = storedObject
 			except TypeError:
+				# NOTE: Not sure in which cae we would get a cache error.
 				pass
 			if isinstance(StoredObject, StoredObject):
 				storedObject.setStorage(self)
-
 			self.lock.release()
 		except Exception, e:
+			# We make sure to always release the lock here
 			self.lock.release()
 			exception_format = repr(traceback.format_exc()).split("\\n")
 			error_msg = u"\n|".join(exception_format[:-1])
@@ -935,14 +940,10 @@ class ObjectStorage:
 			res[key] = self.get(key)
 		return res
 
-	# FIXME: This shoudn't be asJSON bu asPrimitive
 	def serializeObjectExport( self, data ):
-		return asJSON(data)
+		return asPrimitive(data)
 
 	def deserializeObjectExport( self, data):
-		# We unJSON without restoring, as we just want the raw primitive
-		# export. The object class Import will take care of propertly
-		# reconstructing the object when necessary.
-		return unJSON(data, useRestore=False)
+		return data
 
 # EOF - vim: tw=80 ts=4 sw=4 noet
