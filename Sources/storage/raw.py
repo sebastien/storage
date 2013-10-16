@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 17-Sep-2013
+# Last mod  : 16-Oct-2013
 # -----------------------------------------------------------------------------
 
 import types, weakref, threading
@@ -444,12 +444,10 @@ class RawStorage:
 		return data
 
 	def serializeMeta( self, meta ):
-		return asJSON(meta)
+		return asPrimitive(meta)
 
 	def deserializeMeta( self, meta ):
-		# NOTE: We don't want to restore the object yet there, we just want
-		# the meta information
-		return unJSON(meta, useRestore=False)
+		return meta
 
 	# FIXME: Same as StoredObject._getStoragePrefix
 	def _getStoragePrefix( self, types=None ):

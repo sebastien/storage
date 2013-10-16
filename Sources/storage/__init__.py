@@ -5,13 +5,13 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 15-Oct-2013
+# Last mod  : 16-Oct-2013
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
 import uuid, calendar, random
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 # TODO: Add worker to sync
 # TODO: Add observer to observe changes to the filesystem in DirectoryBackend
@@ -429,13 +429,38 @@ class Backend(object):
 	of the data. This should be used if you really want to make sure that
 	the data is commited to the underlying storage."""
 
-	HAS_READ   = True
-	HAS_WRITE  = True
-	HAS_STREAM = False
-	HAS_FILE   = False
+	HAS_READ    = True
+	HAS_WRITE   = True
+	HAS_STREAM  = False
+	HAS_FILE    = False
+	HAS_PUBLISH = True
 
 	def __init__( self ):
-		pass
+		self._onPublish = None
+
+	def onPublish( self, callback ):
+		"""Adds a callback that will be invoked when the `publish` method
+		is invoked."""
+		if callback not in self._onPublish:
+			self._onPublish.append(callback)
+		return self
+
+	def publish( self, operation, key, data=None ):
+		"""The publish method allows to publish a change to the backend."""
+		for callback in self._onPublish: callback(operation, key, data)
+
+	def process( operation, key, data=None ):
+		"""Processes the given operation (from `Operations`) with the given key
+		and data. This is useful for processing a journal of transactions."""
+		if self.operation is Operations.ADD:
+			return self.add(key, data)
+		elif self.operation is Operations.UPDATE:
+			return self.udpate(key, data)
+		elif self.operation is Operations.REMOVE:
+			return self.remove(key)
+		else:
+			# The operation is not supported
+			raise NotImplementedError
 
 	def add( self, key, data ):
 		"""Adds the given data to the storage."""
@@ -493,12 +518,15 @@ class Backend(object):
 			return asJSON(key), asJSON(data)
 
 	def _deserialize( self, key=NOTHING, data=NOTHING ):
+		# NOTE: We use restore=False as we want the backends to store
+		# primitives, it's up to the parent storages to use restore to restore
+		# data.
 		if   key  is NOTHING:
-			return unJSON(data)
+			return unJSON(data, useRestore=False)
 		elif data is NOTHING:
-			return unJSON(key)
+			return unJSON(key, useRestore=False)
 		else:
-			return unJSON(key), unJSON(data)
+			return unJSON(key, useRestore=False), unJSON(data, useRestore=False)
 
 # -----------------------------------------------------------------------------
 #
@@ -523,6 +551,14 @@ class MultiBackend( Backend ):
 				self._fileBackend = b
 			if b.HAS_STREAM:
 				self._streamBackend = b
+			b.onPublish(lambda op, key, data=None, source=b:self._onBackendPublish(op, key, data, source))
+
+	def _onBackendPublish( self, operation, key, data, source ):
+		"""When a backend publishes an operation, the other backends will process
+		the operation."""
+		for b in self.backends:
+			if b != source:
+				b.process(operation, key, data)
 
 	def add( self, key, data ):
 		for backend in self.backends:
@@ -742,9 +778,9 @@ class DirectoryBackend(Backend):
 	keys to specific file system paths, allowing to write custom path-mapping
 	schemes."""
 
-	HAS_FILE   = True
-	HAS_STREAM = True
-	FILE_EXTENSION = ".json"
+	HAS_FILE            = True
+	HAS_STREAM          = True
+	FILE_EXTENSION      = ".json"
 	DEFAULT_STREAM_SIZE = 1024 * 100
 
 	def __init__( self, root, pathToKey=None, keyToPath=None, writer=None, reader=None, extension=None):
@@ -761,46 +797,90 @@ class DirectoryBackend(Backend):
 		if not os.path.isdir(self.root):
 			os.mkdir(self.root)
 
-	def _defaultKeyToPath( self, backend, key ):
-		"""Converts the given key to the given path."""
-		return self.root + key.replace(".", "/") + self.FILE_EXTENSION
+	# =========================================================================
+	# BACKEND METHODS
+	# =========================================================================
 
-	def _defaultPathToKey( self, backend, path ):
-		res = path.replace("/",".")
-		if self.FILE_EXTENSION:
-			return res[len(self.root):-len(self.FILE_EXTENSION)]
+	def keys( self, prefix=None):
+		"""Iterates through all (or the given subset) of keys in this storage."""
+		assert not prefix or type(prefix) in (str,unicode) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
+		if prefix and type(prefix) in (tuple, list): prefix = prefix[0]
+		ext_len = len(self.FILE_EXTENSION)
+		if not prefix:
+			prefix_path = self.root
 		else:
-			return res[len(self.root):]
+			prefix_path = self.path(prefix or "")
+			if ext_len: prefix_path = prefix_path[:-ext_len]
+		for root, dirnames, filenames in os.walk(self.root):
+			for f in filenames:
+				if not f.endswith(self.FILE_EXTENSION): continue
+				path = root + os.sep + f
+				key  = self.pathToKey( self, path )
+				if prefix and not key.startswith(prefix): continue
+				yield key
 
-	def _defaultWriter( self, backend, operation, key, data ):
-		"""Writes the given operation on the storable with the given key and data"""
-		return self.writeFile(
-			self.getFileName(key),
-			data,
-		)
+	def count( self, prefix=None):
+		"""Returns the numbers of keys that match the given prefix(es)"""
+		return len(tuple(self.keys(prefix)))
 
-	def _defaultReader( self, backend, key ):
-		"""Returns the value that is stored in the given backend at the given
-		key."""
-		return self.readFile(self.getFileName(key))
+	def add( self, key, data ):
+		"""Adds the given data to the storage."""
+		self.writer(self, Operations.ADD, self.path(key), self._serialize(data=data))
 
-	def getFileName( self, key ):
-		assert key, "No key given"
-		return self.keyToPath(self, key)
+	def get( self, key ):
+		"""Gets the value associated with the given key in the storage."""
+		return self._deserialize(data=self.reader(self, self.path(key=key)))
 
-	def _getWriteFileHandle( self, path, mode="ab" ):
-		parent = os.path.dirname(path)
-		if parent and not os.path.exists(parent): os.makedirs(parent)
-		return file(path, mode)
+	def has( self, key ):
+		return os.path.exists(self.path(key))
 
-	def _getReadFileHandle( self, path, mode="rb" ):
+	def remove( self, key ):
+		"""Removes the given value from the storage. This will remove the
+		given file and remove the parent directory if it's empty."""
+		# FIXME: This works for objects and raw, not so much for metrics
+		path = self.keyToPath(self, key)
 		if os.path.exists(path):
-			return file(path, mode)
-		else:
-			return None
+			os.unlink(path)
+		parent = os.path.dirname(path)
+		if parent != self.root:
+			if os.path.exists(parent):
+				if not os.listdir(parent): os.rmdir(parent)
+		return self
 
-	def _closeFileHandle( self, handle ):
-		handle.close()
+	def sync( self ):
+		"""This backend sync at each operation, so if you want to
+		buffer operation, use a cached backend."""
+
+	def path( self, key):
+		return self._serialize(key)
+
+	def stream( self, key, size=None ):
+		# FIXME: Hope this does not leak
+		with file(self.path(key),"rb") as f:
+			while True:
+				d = f.read(size or self.DEFAULT_STREAM_SIZE)
+				if d: yield d
+				else: break
+
+	def queryMetrics( self, name=None, timestamp=None ):
+		return []
+
+	def listMetrics( self ):
+		"""Lists the metrics available in this backend"""
+		return []
+
+	def _serialize( self, key=NOTHING, data=NOTHING ):
+		"""Serializing the key means converting the key to a path."""
+		if key is NOTHING:
+			return Backend._serialize(data=data)
+		elif data is NOTHING:
+			return self.keyToPath(self, key)
+		else:
+			return self.keyToPath(self, key), Backend._serialize(data=data)
+
+	# =========================================================================
+	# FILE I/O
+	# =========================================================================
 
 	def appendFile( self, path, data ):
 		handle = self._getWriteFileHandle(path, mode="ab")
@@ -841,72 +921,42 @@ class DirectoryBackend(Backend):
 		else:
 			return None
 
-	def keys( self, prefix=None):
-		"""Iterates through all (or the given subset) of keys in this storage."""
-		assert not prefix or type(prefix) in (str,unicode) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
-		if prefix and type(prefix) in (tuple, list): prefix = prefix[0]
-		ext_len     = len(self.FILE_EXTENSION)
-		if not prefix:
-			prefix_path = self.root
+	# =========================================================================
+	# INTERNALS (FILE MANIPULATION)
+	# =========================================================================
+
+	def _defaultKeyToPath( self, backend, key ):
+		"""Converts the given key to the given path."""
+		return self.root + key.replace(".", "/") + self.FILE_EXTENSION
+
+	def _defaultPathToKey( self, backend, path ):
+		res = path.replace("/",".")
+		if self.FILE_EXTENSION:
+			return res[len(self.root):-len(self.FILE_EXTENSION)]
 		else:
-			prefix_path = self.getFileName(prefix or "")
-			if ext_len: prefix_path = prefix_path[:-ext_len]
-		for root, dirnames, filenames in os.walk(self.root):
-			for f in filenames:
-				if not f.endswith(self.FILE_EXTENSION): continue
-				path = root + os.sep + f
-				key  = self.pathToKey(self, path )
-				if prefix and not key.startswith(prefix): continue
-				yield key
+			return res[len(self.root):]
 
-	def count( self, prefix=None):
-		"""Returns the numbers of keys that match the given prefix(es)"""
-		return len(tuple(self.keys(prefix)))
+	def _defaultWriter( self, backend, operation, path, data ):
+		"""Writes the given operation on the storable with the given key and data"""
+		return self.writeFile(path, data)
 
-	def add( self, key, data ):
-		"""Adds the given data to the storage."""
-		self.writer(self, Operations.ADD, key, data)
+	def _defaultReader( self, backend, path ):
+		"""Returns the value that is stored in the given backend at the given
+		key."""
+		return self.readFile(path)
 
-	def get( self, key ):
-		"""Gets the value associated with the given key in the storage."""
-		return self.reader(self, key)
-
-	def has( self, key ):
-		return os.path.exists(self.getFileName(key))
-
-	def remove( self, key ):
-		"""Removes the given value from the storage. This will remove the
-		given file and remove the parent directory if it's empty."""
-		# FIXME: This works for objects and raw, not so much for metrics
-		path = self.keyToPath(self, key)
-		if os.path.exists(path):
-			os.unlink(path)
+	def _getWriteFileHandle( self, path, mode="ab" ):
 		parent = os.path.dirname(path)
-		if parent != self.root:
-			if os.path.exists(parent):
-				if not os.listdir(parent): os.rmdir(parent)
-		return self
+		if parent and not os.path.exists(parent): os.makedirs(parent)
+		return file(path, mode)
 
-	def sync( self ):
-		"""This backend sync at each operation, so if you want to
-		buffer operation, use a cached backend."""
+	def _getReadFileHandle( self, path, mode="rb" ):
+		if os.path.exists(path):
+			return file(path, mode)
+		else:
+			return None
 
-	def path( self, key):
-		return self.getFileName(key)
-
-	def stream( self, key, size=None ):
-		# FIXME: Hope this does not leak
-		with file(self.getFileName(key),"rb") as f:
-			while True:
-				d = f.read(size or self.DEFAULT_STREAM_SIZE)
-				if d: yield d
-				else: break
-
-	def queryMetrics( self, name=None, timestamp=None ):
-		return []
-
-	def listMetrics( self ):
-		"""Lists the metrics available in this backend"""
-		return []
+	def _closeFileHandle( self, handle ):
+		handle.close()
 
 # EOF - vim: tw=80 ts=4 sw=4 noet
