@@ -5,11 +5,11 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 16-Oct-2013
+# Last mod  : 17-Oct-2013
 # -----------------------------------------------------------------------------
 
 import types, weakref, threading
-from   storage import Storable, Identifier, getCanonicalName, getTimestamp, asJSON, unJSON, NOTHING
+from   storage import Storable, Identifier, getCanonicalName, getTimestamp, asJSON, unJSON, asPrimitive, NOTHING
 
 # TODO: There should be a backend that stores data so that the same file
 #       uploaded multiple times would not be stored in two separate file. It
