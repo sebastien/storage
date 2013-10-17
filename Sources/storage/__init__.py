@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 16-Oct-2013
+# Last mod  : 17-Oct-2013
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
@@ -124,16 +124,16 @@ def getTimestamp(date=None, period=None):
 	since EPOCH)."""
 	# FIXME: Should return UTC datetime
 	if date is None:
-		now  = datetime.datetime.utcnow()
+		date = datetime.datetime.utcnow()
 	if isinstance(date, datetime.datetime):
 		date = (
-			now.year,
-			now.month,
-			now.day,
-			now.hour,
-			now.minute,
-			now.second,
-			now.microsecond
+			date.year,
+			date.month,
+			date.day,
+			date.hour,
+			date.minute,
+			date.second,
+			date.microsecond
 		)
 	if type(date) in (tuple, list):
 		if len(date) == 9:
@@ -827,9 +827,14 @@ class DirectoryBackend(Backend):
 		"""Adds the given data to the storage."""
 		self.writer(self, Operations.ADD, self.path(key), self._serialize(data=data))
 
+	def update( self, key, data ):
+		"""Updates the given data to the storage."""
+		self.writer(self, Operations.UPDATE, self.path(key), self._serialize(data=data))
+
 	def get( self, key ):
 		"""Gets the value associated with the given key in the storage."""
-		return self._deserialize(data=self.reader(self, self.path(key=key)))
+		data = self.reader(self, self.path(key=key))
+		return self._deserialize(data=data) if data is not None else None
 
 	def has( self, key ):
 		return os.path.exists(self.path(key))
@@ -872,11 +877,11 @@ class DirectoryBackend(Backend):
 	def _serialize( self, key=NOTHING, data=NOTHING ):
 		"""Serializing the key means converting the key to a path."""
 		if key is NOTHING:
-			return Backend._serialize(data=data)
+			return Backend._serialize(self, data=data)
 		elif data is NOTHING:
 			return self.keyToPath(self, key)
 		else:
-			return self.keyToPath(self, key), Backend._serialize(data=data)
+			return self.keyToPath(self, key), Backend._serialize(self, data=data)
 
 	# =========================================================================
 	# FILE I/O

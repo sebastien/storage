@@ -5,8 +5,13 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 14-Jul-2008
-# Last mod  : 16-Oct-2013
+# Last mod  : 17-Oct-2013
 # -----------------------------------------------------------------------------
+
+# FIXME: Relations should be exported as shallow by default (objects can change)
+# The problem is that sometimes the objects have changed, or might even have
+# been removed, in which case the serialized data in the relation will still
+# recreate the object as it was when added to the relation.
 
 # TODO: Add import/create/update filters that will check and normalize the input data
 
@@ -346,8 +351,16 @@ class StoredObject(Storable):
 			return self._relations[name]
 		else:
 			raise Exception("Property %s.%s is not declared in RELATIONS" % (self.__class__.__name__, name))
+
 	def getID( self ):
 		self.oid
+
+	def getUpdate( self, key="oid"):
+		updates = self.updates
+		if updates:
+			return updated.get("oid") or 0
+		else:
+			return 0
 
 	def getStorageKey( self ):
 		"""Returns the key used to store this object in a storage."""
@@ -646,6 +659,7 @@ class Relation(object):
 		if "depth" in o: o["depth"] += 1
 		# FIXME: We have to be very clear about the resolve here -- is it a
 		# good thing?
+		# FIXME: What do we do if an element is referenced but got removed?
 		return [asPrimitive(_, **o) for _ in self.get(resolve=options.get("resolve", True))]
 
 	def __len__( self ):
