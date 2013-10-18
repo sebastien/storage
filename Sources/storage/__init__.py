@@ -11,8 +11,9 @@
 import os, sys, json, datetime, types, shutil, time, collections
 import uuid, calendar, random
 
-__version__ = "0.7.2"
+__version__ = "0.7.3"
 
+# TODO: Rework the FILE/RAW interface
 # TODO: Add worker to sync
 # TODO: Add observer to observe changes to the filesystem in DirectoryBackend
 
@@ -227,6 +228,7 @@ class Operations(object):
 	ADD            = "="
 	REMOVE         = "-"
 	UPDATE         = "+"
+	SAVE_RAW       = "+R"
 
 # -----------------------------------------------------------------------------
 #
@@ -434,6 +436,7 @@ class Backend(object):
 	HAS_STREAM  = False
 	HAS_FILE    = False
 	HAS_PUBLISH = True
+	HAS_RAW     = False
 
 	def __init__( self ):
 		self._onPublish = None
@@ -508,6 +511,23 @@ class Backend(object):
 	def stream( self, key, size=None ):
 		"""Streams the data at the given key by chunks of given `size`"""
 		raise Exception("Backend.stream not implemented")
+
+	def hasRawData( self, key, ext=None ):
+		"""Tells if the backend has raw data assocaited with the given key and extension"""
+		raise NotImplementedError
+
+	def saveRawData( self, key, data, ext=None ):
+		"""Saved the raw data associated with the given key and extension"""
+		raise NotImplementedError
+
+	def streamRawData( self, key, size=None, ext=None ):
+		"""Loads the raw data associated with the given key and extension. Returns
+		a generator that will load the data."""
+		raise NotImplementedError
+
+	def getRawDataPath( self, key, ext=None ):
+		"""Returns the physical path to the. This only works if bakcend has HAS_FILE"""
+		raise NotImplementedError
 
 	def _serialize( self, key=NOTHING, data=NOTHING ):
 		if   key  is NOTHING:
@@ -773,14 +793,16 @@ class DBMBackend(Backend):
 
 # TODO: Should add a backend that caches,
 class DirectoryBackend(Backend):
-	"""A backend that stores the values as files with the given `FILE_EXTENSION`
+	"""A backend that stores the values as files with the given `DATA_EXTENSION`
 	the `keyToPath` and `pathToKey` functions take care of translating the
 	keys to specific file system paths, allowing to write custom path-mapping
 	schemes."""
 
 	HAS_FILE            = True
 	HAS_STREAM          = True
-	FILE_EXTENSION      = ".json"
+	HAS_RAW             = True
+	DATA_EXTENSION      = ".json"
+	RAW_EXTENSION       = ".raw"
 	DEFAULT_STREAM_SIZE = 1024 * 100
 
 	def __init__( self, root, pathToKey=None, keyToPath=None, writer=None, reader=None, extension=None):
@@ -791,7 +813,7 @@ class DirectoryBackend(Backend):
 		self.pathToKey    = pathToKey    or self._defaultPathToKey
 		self.writer       = writer       or self._defaultWriter
 		self.reader       = reader       or self._defaultReader
-		if extension != None: self.FILE_EXTENSION = extension
+		if extension != None: self.DATA_EXTENSION = extension
 		parent_dir  = os.path.dirname(os.path.abspath(self.root))
 		assert os.path.isdir(parent_dir), "DirectoryBacked root parent does not exists: %s" % (parent_dir)
 		if not os.path.isdir(self.root):
@@ -805,7 +827,7 @@ class DirectoryBackend(Backend):
 		"""Iterates through all (or the given subset) of keys in this storage."""
 		assert not prefix or type(prefix) in (str,unicode) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
 		if prefix and type(prefix) in (tuple, list): prefix = prefix[0]
-		ext_len = len(self.FILE_EXTENSION)
+		ext_len = len(self.DATA_EXTENSION)
 		if not prefix:
 			prefix_path = self.root
 		else:
@@ -813,7 +835,7 @@ class DirectoryBackend(Backend):
 			if ext_len: prefix_path = prefix_path[:-ext_len]
 		for root, dirnames, filenames in os.walk(self.root):
 			for f in filenames:
-				if not f.endswith(self.FILE_EXTENSION): continue
+				if not f.endswith(self.DATA_EXTENSION): continue
 				path = root + os.sep + f
 				key  = self.pathToKey( self, path )
 				if prefix and not key.startswith(prefix): continue
@@ -856,8 +878,8 @@ class DirectoryBackend(Backend):
 		"""This backend sync at each operation, so if you want to
 		buffer operation, use a cached backend."""
 
-	def path( self, key):
-		return self._serialize(key)
+	def path( self, key, ext=None):
+		return self.keyToPath(self, key, ext)
 
 	def stream( self, key, size=None ):
 		# FIXME: Hope this does not leak
@@ -866,6 +888,27 @@ class DirectoryBackend(Backend):
 				d = f.read(size or self.DEFAULT_STREAM_SIZE)
 				if d: yield d
 				else: break
+
+	# FIXME: Not sure if this should be merges as get/set/stream/path
+	def hasRawData( self, key, ext=RAW_EXTENSION ):
+		return os.path.exists(self.path(key, ext=ext))
+
+	def saveRawData( self, key, data, ext=RAW_EXTENSION ):
+		self.writer(self, Operations.SAVE_RAW, self.path(key, ext=ext), data)
+
+	def loadRawData( self, key, data, ext=RAW_EXTENSION ):
+		return self.reader(self, self.path(key=key, ext=ext))
+
+	def streamRawData( self, key, size=None, ext=RAW_EXTENSION ):
+		# FIXME: Hope this does not leak
+		with file(self.path(key, ext=ext),"rb") as f:
+			while True:
+				d = f.read(size or self.DEFAULT_STREAM_SIZE)
+				if d: yield d
+				else: break
+
+	def getRawDataPath( self, key, ext=RAW_EXTENSION ):
+		return self.path(key, ext=ext)
 
 	def queryMetrics( self, name=None, timestamp=None ):
 		return []
@@ -879,9 +922,9 @@ class DirectoryBackend(Backend):
 		if key is NOTHING:
 			return Backend._serialize(self, data=data)
 		elif data is NOTHING:
-			return self.keyToPath(self, key)
+			raise Exception("Serialize key should not be used, use `path()` instead.")
 		else:
-			return self.keyToPath(self, key), Backend._serialize(self, data=data)
+			raise Exception("Serialize key should not be used, use `path()` instead.")
 
 	# =========================================================================
 	# FILE I/O
@@ -930,14 +973,15 @@ class DirectoryBackend(Backend):
 	# INTERNALS (FILE MANIPULATION)
 	# =========================================================================
 
-	def _defaultKeyToPath( self, backend, key ):
+	def _defaultKeyToPath( self, backend, key, ext=None ):
 		"""Converts the given key to the given path."""
-		return self.root + key.replace(".", "/") + self.FILE_EXTENSION
+		return self.root + key.replace(".", "/") + (ext or self.DATA_EXTENSION)
 
-	def _defaultPathToKey( self, backend, path ):
+	def _defaultPathToKey( self, backend, path, ext=None ):
 		res = path.replace("/",".")
-		if self.FILE_EXTENSION:
-			return res[len(self.root):-len(self.FILE_EXTENSION)]
+		ext = ext or self.DATA_EXTENSION
+		if ext:
+			return res[len(self.root):-len(ext)]
 		else:
 			return res[len(self.root):]
 

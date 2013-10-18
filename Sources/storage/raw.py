@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 17-Oct-2013
+# Last mod  : 18-Oct-2013
 # -----------------------------------------------------------------------------
 
 import types, weakref, threading
@@ -217,7 +217,7 @@ class StoredRaw(Storable):
 		if self._data:
 			yield self._data
 		elif self.STORAGE:
-			for _ in self.STORAGE.stream(self, size=None):
+			for _ in self.STORAGE.streamData(self, size=None):
 				yield _
 
 	def path( self ):
@@ -305,21 +305,26 @@ class RawStorage:
 		key_meta = key + self.META_SUFFIX
 		return key_meta, key_data
 
-	def add( self, storedRaw ):
+	def add( self, storedRaw, update=False ):
 		key_meta, key_data = self.getStorageKeys(storedRaw)
 		assert storedRaw.hasStorage()
 		assert storedRaw.STORAGE == self, "StoredRaw stored in a different storage"
 		assert storedRaw.oid in self._cache, "StoredRaw should be already in cache"
-		self.backend.add(key_meta, self.serializeMeta(storedRaw.export()))
+		# NOTE: We MUST make sure that there is something saved for the key_meta,
+		# event when there's no meta data, as otherwise the object won't appear
+		# as saved.
+		if not update:
+			self.backend.add(key_meta, self.serializeMeta(storedRaw.export()))
+		else:
+			self.backend.update(key_meta, self.serializeMeta(storedRaw.export()))
 		# We only store the data if it has changed
 		if storedRaw.hasDataChanged():
-			# FIXME: Backends should supprot file instead of string for data
-			self.backend.add(key_data, self.serializeData(storedRaw._data))
+			self.backend.saveRawData(key_data, storedRaw._data)
 			storedRaw.setDataSaved()
 
 	def update( self, storedRaw ):
 		# Right now, we don't need anything different than add
-		self.add(storedRaw)
+		return self.add(storedRaw, update=True)
 
 	def restore( self, meta=None, data=None ):
 		if isinstance(meta, StoredRaw):
@@ -407,17 +412,26 @@ class RawStorage:
 		i   = 0
 		if types and type(types) not in (list, tuple):types=(types,)
 		# FIXME: Should be updated according to raw storage
-		suffix_len = len(self.DATA_SUFFIX)
+		data_suffix_len = len(self.DATA_SUFFIX)
+		meta_suffix_len = len(self.META_SUFFIX)
+		previous_key    = None
 		for key in self.keys(types):
 			if count < 0 or (i >= start and (i < end or end < 0)):
-				if not key.endswith(self.DATA_SUFFIX) and not key.endswith(self.META_SUFFIX):
+				if key.endswith(self.DATA_SUFFIX):
+					key = key[:-data_suffix_len]
+				elif key.endswith(self.META_SUFFIX):
+					key = key[:-meta_suffix_len]
+				else:
 					continue
-				key = key[:-suffix_len]
 				s = self.get(key)
 				if not s:
 					continue
 				if not types or s.__class__ in types:
-					yield s
+					# We make sure not to issue the same key twice, as in the
+					# case where there is both a meta and a data file, there might
+					# be two matches for the key
+					if s != previous_key: yield s
+					previous_key = s
 			i += 1
 
 	def count( self, types=None ):
@@ -428,20 +442,14 @@ class RawStorage:
 		this stored raw. This might generate an exception if the backend
 		does not support it."""
 		key_meta, key_data = self.getStorageKeys(storedRaw)
-		return self.backend.path(key_data)
+		return self.backend.getRawDataPath(key_data)
 
-	def stream( self, storedRaw, size=None ):
+	def streamData( self, storedRaw, size=None ):
 		"""Streams the data from the storage -- this might generate an
 		exception, as not all storage support streaming."""
 		key_meta, key_data = self.getStorageKeys(storedRaw)
-		for chunk in self.backend.stream(key_data, size=None):
+		for chunk in self.backend.streamRawData(key_data, size=None):
 			yield chunk
-
-	def serializeData( self, data ):
-		return data
-
-	def deserializeData( self, data ):
-		return data
 
 	def serializeMeta( self, meta ):
 		return asPrimitive(meta)
