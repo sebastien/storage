@@ -42,6 +42,11 @@ try:
 except ImportError:
 	from json       import dumps as asJSON
 
+try:
+	import reporter as logging
+except ImportError:
+	import logging
+
 NOTHING = os
 
 def asPrimitive( value, **options ):
@@ -439,13 +444,38 @@ class Backend(object):
 	HAS_RAW     = False
 
 	def __init__( self ):
-		self._onPublish = None
+		self._onPublish   = []
+		self._subscribers = {}
 
 	def onPublish( self, callback ):
 		"""Adds a callback that will be invoked when the `publish` method
 		is invoked."""
 		if callback not in self._onPublish:
 			self._onPublish.append(callback)
+		return self
+
+	def subscribe( self, key, callback ):
+		"""Adds the given callback to subscribe to add/update/remove events
+		on the given key."""
+		callbacks = self._subscribers.setdefault(key, [])
+		if callback not in callbacks: callbacks.append(callback)
+		return self
+
+	def unsubscribe( self, key, callback ):
+		"""Unsubscribes the given callback from the given key."""
+		callbacks = self._subscribers.setdefault(key, [])
+		if callback in callbacks: callbacks.remove(callback)
+		return self
+
+	def notify( self, key, operation, data=None ):
+		"""Notify the subscribers to the given key of the given operation
+		and data."""
+		callbacks = self._subscribers.get(key, [])
+		for c in callbacks:
+			try:
+				c(key, operation, data)
+			except Exception as e:
+				logging.error("Backend.notify: Exception in callback {0}: {1}".format(c, e))
 		return self
 
 	def publish( self, operation, key, data=None ):

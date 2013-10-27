@@ -13,6 +13,10 @@ import retro.web
 from   storage     import Storable
 from   storage.raw import StoredRaw
 
+# FIXME: It seems that sometimes when one element is sent as a field value
+# (like shootingback.model.Clip.tags=["Youth"], only "Youth" is stored
+# instead of ["Youth"]. Might be in objects or JSON conversion.
+
 # FIXME: Document me!!!
 
 # TODO: @http("/asdsada/${asdsa}"

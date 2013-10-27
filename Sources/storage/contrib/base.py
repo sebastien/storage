@@ -53,6 +53,10 @@ class Image(StoredRaw):
 		else:
 			return self.getFull()
 
+	def setPreview( self, data ):
+		meta("preview", base64.b64encode(data))
+		return self
+
 	def getWidth( self ):
 		return self.meta("width")
 
@@ -312,5 +316,13 @@ class Interface:
 
 	def _createStorageServer( self, prefix ):
 		return StorageServer(prefix).use(*[_ for _ in self.CLASSES if StorageDecoration.Has(_)])
+
+	def sync( self ):
+		"""Calls `sync()` on all the backends."""
+		self.objects.sync()
+		self.raw.sync()
+		# FIXME: indexes have no sync?
+		# self.indexes.sync()
+		return True
 
 # EOF

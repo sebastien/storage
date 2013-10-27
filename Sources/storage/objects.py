@@ -126,11 +126,13 @@ class StoredObject(Storable):
 		return self._getStoragePrefix(cls)[0]
 
 	@classmethod
-	def All( cls ):
+	def All( cls, since=None ):
 		"""Iterates on all the objects of this type in the storage."""
 		assert cls.STORAGE, "Class has not been registerd in an ObjectStorage yet: %s" % (cls)
 		for storage_id in cls.STORAGE.keys(cls):
-			yield cls.STORAGE.get( storage_id )
+			obj = cls.STORAGE.get( storage_id )
+			if since is None or since < obj.getUpdateTime():
+				yield obj
 
 	@classmethod
 	def Keys( cls, prefix=None ):
@@ -290,14 +292,14 @@ class StoredObject(Storable):
 	def init( self ):
 		"""Can be overriden to do post-creation/import processing"""
 
-	def set( self, propertiesAndRelations, skipExtraProperties=None ):
+	def set( self, propertiesAndRelations, skipExtraProperties=None, timestamp=None ):
 		if skipExtraProperties is None: skipExtraProperties = self.SKIP_EXTRA_PROPERTIES
 		if propertiesAndRelations:
 			for name, value in propertiesAndRelations.items():
 				if name in self.PROPERTIES:
-					self.setProperty(name, value)
+					self.setProperty(name, value, timestamp)
 				elif name in self.RELATIONS:
-					self.setRelation(name, value)
+					self.setRelation(name, value, timestamp)
 				elif name in self.RESERVED:
 					if name == "updates":
 						# If the reserved keyword is "updates", we refresh the updates
@@ -314,7 +316,7 @@ class StoredObject(Storable):
 	def update( self, propertiesAndRelations ):
 		return self.set(propertiesAndRelations)
 
-	def setProperty( self, name, value ):
+	def setProperty( self, name, value, timestamp=None ):
 		"""Sets a property of the given object. The property must match the
 		properties defined in `PROPERTIES`"""
 		# TODO: Check type
@@ -324,16 +326,20 @@ class StoredObject(Storable):
 		if not self._isNew:
 			# We update the `updates` map only if the object is not new (has
 			# been registered)
-			self._updates[name] = self._updates["oid"] = max(getTimestamp(), self._updates.get(name, -1))
+			self._updates[name] = self._updates["oid"] = max(getTimestamp() if timestamp is None else timestamp, self._updates.get(name, -1))
 		return self
 
-	def setRelation( self, name, value ):
+	def setRelation( self, name, value, timestamp=None ):
 		"""Sets a relation of the given object. The value must match the
 		definition in `RELATIONS`"""
 		# TODO: Check type
 		assert name in self.RELATIONS, "Relation `%s` not one of: %s" % (name, self.PROPERTIES.keys() + self.RELATIONS.keys())
 		if not name in self._relations: self._relations[name] = Relation(self.__class__, self.RELATIONS[name])
 		self._relations[name].set(value)
+		if not self._isNew:
+			# We update the `updates` map only if the object is not new (has
+			# been registered)
+			self._updates[name] = self._updates["oid"] = max(getTimestamp() if timestamp is None else timestamp, self._updates.get(name, -1))
 		return self
 
 	def getProperty( self, name ):
@@ -355,10 +361,11 @@ class StoredObject(Storable):
 	def getID( self ):
 		self.oid
 
-	def getUpdate( self, key="oid"):
-		updates = self.updates
-		if updates:
-			return updated.get("oid") or 0
+	def getUpdateTime( self, key="oid"):
+		"""Returns the time at with the given object (or key) was updated. The time
+		is returned as a storage timestamp."""
+		if self._updates:
+			return self._updates.get(key, 0)
 		else:
 			return 0
 
@@ -730,6 +737,7 @@ class ObjectStorage:
 		key = storedObject.getStorageKey()
 		if not restored: self._syncQueue[key] = storedObject
 		self._cache[key] = storedObject
+		# TODO: Should register a callback for changes and then call for a merge
 		self.lock.release()
 		return self
 

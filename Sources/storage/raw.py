@@ -57,7 +57,7 @@ class StoredRaw(Storable):
 		return cls.OID_GENERATOR()
 
 	@classmethod
-	def Import( cls, meta, data=None ):
+	def Import( cls, meta, data=None, updateProperties=False ):
 		if isinstance(meta, StoredRaw):
 			assert data is None, "A StoredRaw was given as first argument, but data was given as well"
 			assert isinstance(meta, cls), "Expected class %s, got %s" % (cls, properties.__class__)
@@ -70,7 +70,13 @@ class StoredRaw(Storable):
 				obj = cls.Get(oid)
 				# If it exists, we update its properties
 				if obj:
-					obj.meta(meta)
+					# FIXME: I don't see the use case for an `updateProperties`, but am
+					# leaving here as an option. The default behaviour is that we should
+					# only update the properties if the object does not exist in the
+					# storage. If it does, then we assume the storage's version is the
+					# most up to date.if updateProperties:
+					for value, key in meta.items():
+						obj.meta(key, value)
 					return obj
 				# Otherwise we create a new one
 				else:
@@ -220,15 +226,24 @@ class StoredRaw(Storable):
 			for _ in self.STORAGE.streamData(self, size=None):
 				yield _
 
+	def loadData( self ):
+		# FIXME: This is highly inefficient, but useful for debugging.
+		res = ""
+		for _ in self.data(): res += _
+		return res
+
 	def path( self ):
 		"""Returns the path of the data file."""
 		if self.STORAGE:
 			return self.STORAGE.path(self)
 		else:
-			return None
+			raise Exception("No storage attached to stored raw: {0}".format(self))
 
 	def length( self ):
-		return len(self._data)
+		if self._data:
+			return len(self._data)
+		else:
+			return None
 
 	def export( self, **options ):
 		depth = 1
