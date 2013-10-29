@@ -75,8 +75,14 @@ class StoredRaw(Storable):
 					# only update the properties if the object does not exist in the
 					# storage. If it does, then we assume the storage's version is the
 					# most up to date.if updateProperties:
-					for value, key in meta.items():
-						obj.meta(key, value)
+					for key, value in meta.items():
+						# NOTE: We manage reserved properites at this level
+						if key == "type" or key == "oid":
+							continue
+						if key == "timestamp":
+							obj._meta["timestamp"] = max(value, obj._meta.get("timestamp", 0))
+						else:
+							obj.meta(key, value)
 					return obj
 				# Otherwise we create a new one
 				else:
