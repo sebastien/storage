@@ -5,11 +5,11 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 27-Aug-2012
-# Last mod  : 27-Sep-2012
+# Last mod  : 31-Oct-2012
 # -----------------------------------------------------------------------------
 
 from   storage import Storable, getCanonicalName, getTimestamp
-import re
+import re, unicodedata
 
 RE_SPACES=re.compile(u"[\s\t\n]+")
 
@@ -31,6 +31,13 @@ class Indexing:
 	def Normalize( cls, value, object=None):
 		if type(value) is str: value = value.decode("utf-8")
 		return RE_SPACES.sub(u" ", unicode(value or "").lower()).strip()
+
+	# SEE: http://stackoverflow.com/questions/517923/what-is-the-best-way-to-remove-accents-in-a-python-unicode-string
+	@classmethod
+	def NoAccents( cls, value, object=None ):
+		value      = unicode(value) if type(value) is not unicode else value
+		nkfd_form  = unicodedata.normalize("NFKD", value)
+		return nkfd_form.encode("ASCII", "ignore")
 
 	@classmethod
 	def UpdateTime( cls, value, object=None):
