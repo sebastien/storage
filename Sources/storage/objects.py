@@ -442,7 +442,7 @@ class StoredObject(Storable):
 	def export( self, **options ):
 		"""Returns a dictionary representing this object. By default, it
 		just returns the object id (`oid`) and its class (`class`)."""
-		res   = {"oid": self.oid, "type":self.getTypeName, "updates":self._updates}
+		res   = {"oid": self.oid, "type":self.getTypeName(), "updates":self._updates}
 		depth = 1
 		if "depth" in options: depth = options["depth"]
 		if depth > 0:
