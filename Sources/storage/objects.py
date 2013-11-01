@@ -442,7 +442,7 @@ class StoredObject(Storable):
 	def export( self, **options ):
 		"""Returns a dictionary representing this object. By default, it
 		just returns the object id (`oid`) and its class (`class`)."""
-		res   = {"oid": self.oid, "type":getCanonicalName(self.__class__), "updates":self._updates}
+		res   = {"oid": self.oid, "type":self.getTypeName, "updates":self._updates}
 		depth = 1
 		if "depth" in options: depth = options["depth"]
 		if depth > 0:
@@ -455,6 +455,9 @@ class StoredObject(Storable):
 				relation = getattr(self, key)
 				res[key] = asPrimitive(relation, depth=depth - 1)
 		return res
+
+	def getTypeName( self ):
+		return getCanonicalName(self.__class__)
 
 	def asJSON( self, jsonifier=asJSON, **options ):
 		"""Returns a JSON representation of this object using the
