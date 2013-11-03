@@ -282,10 +282,14 @@ class StoredObject(Storable):
 		self._updates    = {}
 		self._isNew      = restored
 		self.set(properties, skipExtraProperties=skipExtraProperties)
-		self.set(kwargs, skipExtraProperties=skipExtraProperties)
+		self.set(kwargs,     skipExtraProperties=skipExtraProperties)
+		# We make sure updates are updated first
+		if properties and "updates" in properties: self._updates.update(properties.get("updates"))
+		if kwargs     and "updates" in kwargs    : self._updates.update(kwargs.get("updates"))
 		if self.STORAGE: self.STORAGE.register(self, restored=restored)
 		# We make sure that there's a timestamp for the object
 		if "oid" not in self._updates: self._updates["oid"] = getTimestamp()
+		# FIXME: Should we make sure that the object had updates for everything?
 		assert self.getStorageKey(), "Object must have a key once created"
 		self.init()
 
