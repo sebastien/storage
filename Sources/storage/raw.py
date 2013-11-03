@@ -5,11 +5,14 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 18-Oct-2013
+# Last mod  : 03-Nov-2013
 # -----------------------------------------------------------------------------
 
-import types, weakref, threading
+import types, weakref, threading, io
 from   storage import Storable, Identifier, getCanonicalName, getTimestamp, asJSON, unJSON, asPrimitive, NOTHING
+
+# FIXME: Should be much closer to stored object, with a similar API. meta
+#        should never allow to store RESERVED PROPERTIES.
 
 # TODO: There should be a backend that stores data so that the same file
 #       uploaded multiple times would not be stored in two separate file. It
@@ -64,6 +67,11 @@ class StoredRaw(Storable):
 			return meta
 		else:
 			oid   = meta.get("oid")
+			# We makre sure to extract the data and remove it from meta if provided
+			# (which might happend in the stored raw is exported with its data)
+			data  = meta.get("data") if data is None else None
+			if "data" in meta:
+				meta = dict(((k,v) for k,v in meta.items() if k!="data"))
 			# If there is an object ID (and we're supposed to get it)
 			if oid:
 				# We look in the storage for this specific object
@@ -234,9 +242,11 @@ class StoredRaw(Storable):
 
 	def loadData( self ):
 		# FIXME: This is highly inefficient, but useful for debugging.
-		res = ""
-		for _ in self.data(): res += _
-		return res
+		v = io.BytesIO()
+		for i,d in enumerate(self.data()):
+			if d is not None:
+				v.write(d)
+		return v.getvalue()
 
 	def path( self ):
 		"""Returns the path of the data file."""
@@ -260,6 +270,9 @@ class StoredRaw(Storable):
 			type=getCanonicalName(self.__class__)
 		)
 		if depth > 0: res.update(self._meta)
+		# NOTE: This is just for data export/synchronization. It's not recommanded
+		# for big files (where rsync is probably better)
+		if options.get("data"): res["data"] = self.loadData()
 		return res
 
 	def save( self ):

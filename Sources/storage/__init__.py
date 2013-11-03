@@ -931,11 +931,15 @@ class DirectoryBackend(Backend):
 
 	def streamRawData( self, key, size=None, ext=RAW_EXTENSION ):
 		# FIXME: Hope this does not leak
-		with file(self.path(key, ext=ext),"rb") as f:
-			while True:
-				d = f.read(size or self.DEFAULT_STREAM_SIZE)
-				if d: yield d
-				else: break
+		path = self.path(key, ext=ext)
+		if os.path.exists(path):
+			with file(path, "rb") as f:
+				while True:
+					d = f.read(size or self.DEFAULT_STREAM_SIZE)
+					if d: yield d
+					else: break
+		else:
+			yield None
 
 	def getRawDataPath( self, key, ext=RAW_EXTENSION ):
 		return self.path(key, ext=ext)
