@@ -184,21 +184,26 @@ class Identifier(object):
 	TIME_BASE  = calendar.timegm(datetime.datetime(2000, 1, 1, 0, 0, 0, 0).utctimetuple())
 
 	@classmethod
-	def ParseNodeID(cls):
+	def ParseNodeID(cls, host=None):
 		"""Parses the node ID based on the hostname (if it is suffixed by a dash
 		and a number. If the NODE_ID is defined in the environment, it will take
 		over."""
-		if os.path.exists("/etc/hostname"):
+		if host:
+			name_suffix = host.split(".")[0].rsplit("-", 1)
+			if len(name_suffix) != 2:
+				return None
+			try:
+				return int(name_suffix[-1])
+			except ValueError:
+				return None
+		elif os.environ.has_key("NODE_ID"):
+			return int(os.environ.get("NODE_ID"))
+		elif os.path.exists("/etc/hostname"):
 			with file("/etc/hostname") as f:
 				for line in f.readlines():
-					name_suffix = line.split(".")[0].rsplit("-", 1)
-					if len(name_suffix) != 2: continue
-					try:
-						return int(name_suffix[-1])
-					except ValueError:
-						pass
-		if os.environ.has_key("NODE_ID"):
-			return int(os.environ.get("NODE_ID"))
+					res = cls.ParseNodeID(line)
+					if res is not None:
+						return res
 		return cls.NODE_ID
 
 	@classmethod
