@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 17-Oct-2013
+# Last mod  : 04-Nov-2013
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
@@ -1041,5 +1041,23 @@ class DirectoryBackend(Backend):
 
 	def _closeFileHandle( self, handle ):
 		handle.close()
+
+def updateNodeID():
+	"""Updates the node ID based on the hostname (if it is suffixed by a dash
+	and a number. If the NODE_ID is defined in the environment, it will take
+	over."""
+	if os.path.exists("/etc/hostname"):
+		with file("/etc/hostname") as f:
+			for line in f.readlines():
+				name_suffix = line.rsplit("-", 1)
+				if len(name_suffix) != 2: continue
+				try:
+					Identifier.NODE_ID = int(name_suffix[-1])
+				except ValueError:
+					pass
+	if os.environ.has_key("NODE_ID"):
+		Identifier.NODE_ID = int(os.environ.get("NODE_ID"))
+
+updateNodeID()
 
 # EOF - vim: tw=80 ts=4 sw=4 noet
