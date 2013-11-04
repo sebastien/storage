@@ -8,7 +8,7 @@
 # Last mod  : 03-Nov-2013
 # -----------------------------------------------------------------------------
 
-import types, weakref, threading, io
+import types, weakref, threading, io, base64
 from   storage import Storable, Identifier, getCanonicalName, getTimestamp, asJSON, unJSON, asPrimitive, NOTHING
 
 # FIXME: Should be much closer to stored object, with a similar API. meta
@@ -71,6 +71,7 @@ class StoredRaw(Storable):
 			# (which might happend in the stored raw is exported with its data)
 			data  = meta.get("data") if data is None else None
 			if "data" in meta:
+				data = base64.b64decode(data)
 				meta = dict(((k,v) for k,v in meta.items() if k!="data"))
 			# If there is an object ID (and we're supposed to get it)
 			if oid:
@@ -272,7 +273,7 @@ class StoredRaw(Storable):
 		if depth > 0: res.update(self._meta)
 		# NOTE: This is just for data export/synchronization. It's not recommanded
 		# for big files (where rsync is probably better)
-		if options.get("data"): res["data"] = self.loadData()
+		if options.get("data"): res["data"] = base64.b64encode(self.loadData())
 		return res
 
 	def save( self ):
