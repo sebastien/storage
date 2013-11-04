@@ -150,7 +150,7 @@ class StoredRaw(Storable):
 		return cls.COLLECTION
 
 	def __init__( self, data=None, restored=False, **meta ):
-		if meta.has_key("timestamp"): self.timestamp = meta["timestamp"]
+		if "timestamp" in meta: self.timestamp = meta["timestamp"]
 		else: self.timestamp = getTimestamp()
 		if meta.has_key("oid"): self.oid = meta["oid"]
 		else: self.oid       = StoredRaw.GenerateOID()
@@ -370,14 +370,18 @@ class RawStorage:
 		else:
 			if meta["oid"] in self._cache:
 				res = self._cache[meta["oid"]]
+				# FIXME: This should be a merge, as we don't know for sure which
+				# version is the most up-to-date
 				res.meta(meta)
 			else:
+				# FIXME: This should probably use Import
 				raw_class = self._declaredClasses.get(meta.get("type")) or RawStorage
-				# TODO: Should report any problem
+				data = meta.get("data")
+				if data: data = base64.b64decode(data)
 				res = raw_class(
 					data,
 					restored=True,
-					**meta
+					**dict(((k,v) for k,v in meta.items() if k != "data"))
 				)
 			if isinstance(res, StoredRaw): res.setStorage(self)
 		return res
