@@ -184,6 +184,29 @@ class Identifier(object):
 	TIME_BASE  = calendar.timegm(datetime.datetime(2000, 1, 1, 0, 0, 0, 0).utctimetuple())
 
 	@classmethod
+	def ParseNodeID(cls):
+		"""Parses the node ID based on the hostname (if it is suffixed by a dash
+		and a number. If the NODE_ID is defined in the environment, it will take
+		over."""
+		if os.path.exists("/etc/hostname"):
+			with file("/etc/hostname") as f:
+				for line in f.readlines():
+					name_suffix = line.split(".")[0].rsplit("-", 1)
+					if len(name_suffix) != 2: continue
+					try:
+						return int(name_suffix[-1])
+					except ValueError:
+						pass
+		if os.environ.has_key("NODE_ID"):
+			return int(os.environ.get("NODE_ID"))
+		return cls.NODE_ID
+
+	@classmethod
+	def UpdateNodeID( cls ):
+		cls.NODE_ID = cls.ParseNodeID()
+		return cls.NODE_ID
+
+	@classmethod
 	def UUID( cls ):
 		"""Returns a UUI4"""
 		return str(uuid.uuid4())
@@ -1042,22 +1065,6 @@ class DirectoryBackend(Backend):
 	def _closeFileHandle( self, handle ):
 		handle.close()
 
-def updateNodeID():
-	"""Updates the node ID based on the hostname (if it is suffixed by a dash
-	and a number. If the NODE_ID is defined in the environment, it will take
-	over."""
-	if os.path.exists("/etc/hostname"):
-		with file("/etc/hostname") as f:
-			for line in f.readlines():
-				name_suffix = line.rsplit("-", 1)
-				if len(name_suffix) != 2: continue
-				try:
-					Identifier.NODE_ID = int(name_suffix[-1])
-				except ValueError:
-					pass
-	if os.environ.has_key("NODE_ID"):
-		Identifier.NODE_ID = int(os.environ.get("NODE_ID"))
-
-updateNodeID()
+Identifier.UpdateNodeID()
 
 # EOF - vim: tw=80 ts=4 sw=4 noet
