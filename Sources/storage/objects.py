@@ -574,6 +574,7 @@ class Relation(object):
 		return self.append(value)
 
 	def append( self, value ):
+		if not value: return self
 		assert type(value) in (dict, types.InstanceType, getattr(value,"__class__")), "Relation only accepts object or exported object, got: %s" % (value)
 		assert isinstance(value, self.getRelationClass()) or value.get("type") == getCanonicalName(self.getRelationClass()), "Relation expects value of type %s, got: %s" % (self.getRelationClass(), value)
 		if self.values is None: self.values = []
