@@ -5,13 +5,14 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 27-Aug-2012
-# Last mod  : 31-Oct-2012
+# Last mod  : 08-Nov-2013
 # -----------------------------------------------------------------------------
 
 from   storage import Storable, getCanonicalName, getTimestamp
 import re, unicodedata
 
-RE_SPACES=re.compile(u"[\s\t\n]+")
+RE_SPACES     = re.compile(u"[\s\t\n]+")
+RE_NOALPHANUM = re.compile(u"[^A-Za-z0-9]+")
 
 # -----------------------------------------------------------------------------
 #
@@ -25,10 +26,12 @@ class Indexing:
 
 	@classmethod
 	def Value( cls, value, object=None ):
+		"""Transparent, jsut returns the value."""
 		return value
 
 	@classmethod
 	def Normalize( cls, value, object=None):
+		"""Converts the word to UTF-8, lowercase, stripped and with single spaces."""
 		if type(value) is str: value = value.decode("utf-8")
 		return RE_SPACES.sub(u" ", unicode(value or "").lower()).strip()
 
@@ -45,15 +48,44 @@ class Indexing:
 		return object.getUpdateTime()
 
 	@classmethod
-	def Keywords( cls, values, object=None ):
+	def Keyword( cls, value, object=None ):
+		"""Normalizes the given value as a keyword. It will be filtered
+		through `NoAccents`, then non-alphanumeric characters will be replaced
+		by spaces, and the result  will be normalized."""
+		value = cls.NoAccents(value)
+		value = RE_NOALPHANUM.sub(u" ", value)
+		value = cls.Normalize(value)
+		return value
+
+	@classmethod
+	def Keywords( cls, values, object=None, minLength=3 ):
+		"""Extracts keywords from the the given object. Returns them
+		noramlized and without accents."""
 		res = set()
 		if type(values) not in (tuple, list): values = (values,)
 		for value in values:
 			if not value: continue
 			for word in value.split(" "):
-				word = cls.Normalize(value)
-				if word: res.add(word)
+				word = cls.Keyword(word)
+				if word and len(word) >= minLength: res.add(word)
 		return list(res)
+
+	@classmethod
+	def Properties( cls, **properties ):
+		"""Returns a function that will index the given `properties` using
+		the given extractor. (for instance `Properties(name=Normalize)`)"""
+		def indexer( cls, values, object=None ):
+			res   = []
+			scope = values
+			for name, extractor in properties.items():
+				v = getattr(scope, name)
+				v = extractor(v, scope)
+				if type(v) in (tuple, list):
+					res.extend(v)
+				else:
+					res.append(v)
+			return res
+		return indexer
 
 	@classmethod
 	def Paths( cls, separator ):
@@ -212,16 +244,16 @@ class Index(object):
 	def update( self, value ):
 		self.STORAGE.update(self.getSignature(value), self.getIndexKey(value))
 
-	def get( self, key ):
+	def get( self, key, restore=True ):
 		for _ in (self.STORAGE.get(key) or ()):
-			if _ is not None: yield self._restoreValue(_)
+			if _ is not None: yield self._restoreValue(_) if restore else _
 
-	def one( self, key, index=0 ):
+	def one( self, key, index=0, restore=True ):
 		i = 0
 		for _ in (self.STORAGE.get(key) or ()):
 			if _ is not None:
 				if i == index:
-					return self._restoreValue(_)
+					return self._restoreValue(_) if restore else _
 				else:
 					i += 1
 
@@ -241,9 +273,9 @@ class Index(object):
 	def keys( self, start=0, end=None, count=None, order=0):
 		return self.STORAGE.keys(start=start, end=end, count=count, order=order)
 
-	def list( self, start=0, end=None, count=None, order=0):
+	def list( self, start=0, end=None, count=None, order=0, restore=True):
 		for _ in self.STORAGE.list(start=start, end=end, count=count, order=order):
-			yield self._restoreValue(_)
+			yield self._restoreValue(_) if restore else _
 
 	def remove( self, value ):
 		self.STORAGE.remove(self.getSignature(value))
@@ -262,8 +294,8 @@ class Index(object):
 	def save( self ):
 		self.STORAGE.sync()
 
-	def __call__( self, key ):
-		return self.get(key)
+	def __call__( self, key, restore=True ):
+		return self.get(key, restore=restore)
 
 # -----------------------------------------------------------------------------
 #

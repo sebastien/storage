@@ -143,11 +143,11 @@ class StoredObject(Storable):
 	# NOTE: We should return Non when the object does not exist, and provide
 	# an Ensure method that will create the object if necessary.
 	@classmethod
-	def Get( cls, oid ):
+	def Get( cls, oid=None, key=None ):
 		"""Returns the instance associated with the given Object ID, if any"""
 		assert cls.STORAGE, "Class has not been registered in an ObjectStorage yet: %s" % (cls)
-		if oid is None: return None
-		return cls.STORAGE.get(cls.StorageKey(oid))
+		if oid is None and key is None: return None
+		return cls.STORAGE.get(cls.StorageKey(oid) if key is None else key)
 
 	@classmethod
 	def Count( cls ):
