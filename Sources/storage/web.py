@@ -134,6 +134,11 @@ class StorageServer(retro.web.Component):
 		info = StorageDecoration.Get(storableClass)
 		return self.onStorableCreate(storableClass, info, request)
 
+	def remove( self, request, storableClass, sid ):
+		"""Removes the given storable."""
+		info = StorageDecoration.Get(storableClass)
+		return self.onStorableRemove(storableClass, info, request, sid)
+
 	def update( self, request, storableClass, sid ):
 		"""Updates an existing instance of the given storable class based on the
 		given request data."""
