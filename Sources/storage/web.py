@@ -212,6 +212,9 @@ class StorageServer(retro.web.Component):
 		storable = storableClass.Get(sid)
 		if not storable: return request.notFound()
 		method   = getattr(storable, name)
+		if request.method() == "POST":
+			request.load ()
+			kwargs = dict(request.params().items() + kwargs.items())
 		if not storable: return request.notFound()
 		if not contentType:
 			return request.returns(method(*args, **kwargs))
@@ -258,7 +261,10 @@ class StorageServer(retro.web.Component):
 				invoke_url, restrict, methods, contentType = meta
 				# TODO: What about restrict?
 				handler = lambda request, sid, *args, **kwargs: self.onStorableInvokeMethod( s, name, contentType, request, sid, *args, **kwargs )
-				self.registerHandler(handler,    dict(GET=url + "/{sid:segment}/" + invoke_url))
+				urls    = {}
+				for method in (methods or ("GET", "POST")):
+					urls[method.upper()] = url + "/{sid:segment}/" + invoke_url
+				self.registerHandler(handler, urls)
 			wrap(name, meta)
 		# Specific to StoredRaw
 		if issubclass(s, StoredRaw):
