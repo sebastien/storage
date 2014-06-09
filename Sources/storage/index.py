@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 27-Aug-2012
-# Last mod  : 08-Nov-2013
+# Last mod  : 09-Jun-2014
 # -----------------------------------------------------------------------------
 
 from   storage import Storable, getCanonicalName, getTimestamp
@@ -62,10 +62,17 @@ class Indexing:
 		"""Extracts keywords from the the given object. Returns them
 		noramlized and without accents."""
 		res = set()
+		if isinstance(values, dict): value = values.values()
 		if type(values) not in (tuple, list): values = (values,)
 		for value in values:
 			if not value: continue
-			for word in value.split(" "):
+			# We might have i18n fields that are like {en:XXX,fr:XXX}
+			if isinstance(value, dict):
+				words = []
+				for _ in value.values(): words.extend(_.split(" "))
+			else:
+				words = value.split(" ")
+			for word in words:
 				word = cls.Keyword(word)
 				if word and len(word) >= minLength: res.add(word)
 		return list(res)
