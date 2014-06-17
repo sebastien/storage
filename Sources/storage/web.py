@@ -5,12 +5,12 @@
 # License   : Revised BSD License                              © FFunction, inc
 # -----------------------------------------------------------------------------
 # Creation  : 13-Aug-2012
-# Last mod  : 09-Aug-2012
+# Last mod  : 17-Jun-2014
 # -----------------------------------------------------------------------------
 
 import types, json
 import retro.web
-from   storage     import Storable
+from   storage     import Storable, restore
 from   storage.raw import StoredRaw
 
 # FIXME: It seems that sometimes when one element is sent as a field value
@@ -59,7 +59,7 @@ class StorageDecoration:
 		self.storable     = storableClass
 		self.url          = url
 		self.restrict     = restrict
-		self.httpMethods  = methods
+		self.httpMethods  = [methods] if isinstance(methods, str) else methods
 		# These are options to give to the object export function. If export
 		# is a string, it is assumed to be a profile.
 		if type(export) in (str,unicode): export = dict(profile=export)
@@ -215,7 +215,17 @@ class StorageServer(retro.web.Component):
 		if request.method() == "POST":
 			request.load ()
 			kwargs = dict(request.params().items() + kwargs.items())
+			# If post is passed without named arguments, it will be
+			# mapped to the '' key.
+			if "" in kwargs:
+				args   = [kwargs.get("")]
+				del kwargs[""]
+			else:
+				args   = None
 		if not storable: return request.notFound()
+		# We restore the values, if any
+		args   = [restore(_) for _ in args] if args else []
+		kwargs = dict((k,restore(v)) for k,v in kwargs.items()) if kwargs else {}
 		if not contentType:
 			return request.returns(method(*args, **kwargs))
 		else:
