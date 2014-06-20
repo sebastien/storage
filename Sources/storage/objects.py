@@ -34,7 +34,7 @@
 # FIXME: How to update the objects when the db has changed locally
 
 import time, threading, json, weakref, types, datetime, traceback
-from   storage import Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, Storable, restore, getTimestamp
+from   storage import Storable, Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, restore, isSame, getTimestamp
 
 __pychecker__ = "unusednames=options"
 
@@ -575,11 +575,17 @@ class Relation(object):
 
 	def append( self, value ):
 		if not value: return self
+		value = restore(value)
 		assert type(value) in (dict, types.InstanceType, getattr(value,"__class__")), "Relation only accepts object or exported object, got: %s" % (value)
 		assert isinstance(value, self.getRelationClass()) or value.get("type") == getCanonicalName(self.getRelationClass()), "Relation expects value of type %s, got: %s" % (self.getRelationClass(), value)
 		if self.values is None: self.values = []
 		self.values.append(value)
 		assert len(self.values) <= 1 or self.isMany(), "Too many elements in relation single relation %s: %s" % (self, self.values)
+		return self
+
+	def remove( self, value ):
+		if not value: return self
+		self.values = [_ for _ in self.get(resolve=False) if not isSame (_, value)]
 		return self
 
 	def clear( self ):
@@ -611,8 +617,10 @@ class Relation(object):
 						# and actual storable
 						if not isinstance(v, Storable):
 							if type(v) is dict:
-								yield relation_class.Import(v)
+								yield restore(v)
 							else:
+								# NOTE: This will nor work if relation_class
+								# is not the direct class to instanciate.
 								yield relation_class.Get(v)
 						else:
 							yield v
