@@ -101,13 +101,13 @@ class StoredRaw(Storable):
 
 	@classmethod
 	def Has( cls, oid ):
-		assert cls.STORAGE, "Class has not been registered in an RawStorage yet: %s" % (cls)
+		assert cls.STORAGE, "Class has not been registered in an RawStorage yet: %s for object %s" % (cls, oid)
 		if oid is None: return False
 		return cls.STORAGE.has(cls.StorageKey(oid))
 
 	@classmethod
 	def Get( cls, oid ):
-		assert cls.STORAGE, "Class has not been registered in an RawStorage yet: %s" % (cls)
+		assert cls.STORAGE, "Class has not been registered in an RawStorage yet: %s for object %s" % (cls, oid)
 		if oid is None: return None
 		return cls.STORAGE.get(cls.StorageKey(oid))
 
@@ -268,13 +268,16 @@ class StoredRaw(Storable):
 		res = dict(
 			oid=self.oid,
 			timestamp=self.timestamp,
-			type=getCanonicalName(self.__class__)
+			type=self.getTypeName()
 		)
 		if depth > 0: res.update(self._meta)
 		# NOTE: This is just for data export/synchronization. It's not recommanded
 		# for big files (where rsync is probably better)
 		if options.get("data"): res["data"] = base64.b64encode(self.loadData())
 		return res
+
+	def getTypeName( self ):
+		return getCanonicalName(self.__class__)
 
 	def save( self ):
 		assert self.STORAGE, "StoredRaw must have storage"

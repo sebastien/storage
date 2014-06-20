@@ -9,6 +9,7 @@
 # Last mod  : 27-Sep-2013
 # -----------------------------------------------------------------------------
 
+import base64
 from storage         import Types, DirectoryBackend, DBMBackend, Storable
 from storage.objects import StoredObject, ObjectStorage
 from storage.raw     import StoredRaw,    RawStorage
@@ -54,7 +55,7 @@ class Image(StoredRaw):
 			return self.getFull()
 
 	def setPreview( self, data ):
-		meta("preview", base64.b64encode(data))
+		self.meta("preview", base64.b64encode(data))
 		return self
 
 	def getWidth( self ):
