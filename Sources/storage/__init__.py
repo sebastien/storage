@@ -109,6 +109,28 @@ def restore( value ):
 	else:
 		return value
 
+def isSame( a, b ):
+	"""Tells if the two values refer to the same storable object (this works
+	with exported storables and actual storables)"""
+	a_type = None
+	a_oid  = None
+	b_type = None
+	b_oid  = None
+	if isinstance(a, Storable):
+		a_type = a.getTypeName()
+		a_oid  = a.oid
+	elif isinstance(a, dict):
+		a_type = a.get("type")
+		a_oid  = a.get("oid")
+	if isinstance(b, Storable):
+		b_type = b.getTypeName()
+		b_oid  = b.oid
+	elif isinstance(b, dict):
+		b_type = b.get("type")
+		b_oid  = b.get("oid")
+	if a_type is None or a_oid is None or b_type is None or b_oid is None: return False
+	return a_type == b_type and a_oid == b_oid
+
 def unJSON( text, useRestore=True ):
 	"""Parses the given text as JSON, and if the result is an object, will try
 	to identify whether the object is serialization of a metric, object or
