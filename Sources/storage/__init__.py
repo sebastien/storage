@@ -253,6 +253,7 @@ class Identifier(object):
 		"""
 		base = long((time.time() - cls.TIME_BASE)) * (10 ** (nodes + rand))
 		r    = random.randint(0,(10**rand)-1)      * (10 ** (nodes))
+		print base, r, cls.NODE_ID
 		return base + r + cls.NODE_ID
 
 	@classmethod
@@ -905,6 +906,7 @@ class DirectoryBackend(Backend):
 
 	def keys( self, prefix=None):
 		"""Iterates through all (or the given subset) of keys in this storage."""
+		print "PREFIX", prefix
 		assert not prefix or type(prefix) in (str,unicode) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
 		if prefix and type(prefix) in (tuple, list): prefix = prefix[0]
 		ext_len = len(self.DATA_EXTENSION)
@@ -913,6 +915,7 @@ class DirectoryBackend(Backend):
 		else:
 			prefix_path = self.path(prefix or "")
 			if ext_len: prefix_path = prefix_path[:-ext_len]
+		print "P", prefix, prefix_path
 		for root, dirnames, filenames in os.walk(self.root):
 			for f in filenames:
 				if not f.endswith(self.DATA_EXTENSION): continue

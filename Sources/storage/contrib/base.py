@@ -288,8 +288,8 @@ class Interface:
 	"""Provides a single-point interface to all the data loading/saving/querying
 	operations."""
 
-	CLASSES  = (File, Image, Video, Comment, Article, Account, Site)
-	INSTANCE = None
+	CLASSES        = (File, Image, Video, Comment, Article, Account, Site)
+	INSTANCE       = None
 	OBJECT_BACKEND = DirectoryBackend
 	RAW_BACKEND    = DirectoryBackend
 	INDEX_BACKEND  = DBMBackend
@@ -325,5 +325,9 @@ class Interface:
 		# FIXME: indexes have no sync?
 		# self.indexes.sync()
 		return True
+
+	def reindex( self ):
+		"""Rebuilds the index"""
+		return self.indexes.rebuild(sync=True)
 
 # EOF
