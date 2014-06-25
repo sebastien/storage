@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 14-Jul-2008
-# Last mod  : 17-Oct-2013
+# Last mod  : 25-Jun-2014
 # -----------------------------------------------------------------------------
 
 # FIXME: Relations should be exported as shallow by default (objects can change)
@@ -129,7 +129,7 @@ class StoredObject(Storable):
 	def All( cls, since=None ):
 		"""Iterates on all the objects of this type in the storage."""
 		assert cls.STORAGE, "Class has not been registerd in an ObjectStorage yet: %s" % (cls)
-		for storage_id in cls.STORAGE.keys(cls):
+		for storage_id in cls.Keys():
 			obj = cls.STORAGE.get( storage_id )
 			if since is None or since < obj.getUpdateTime():
 				yield obj
@@ -947,11 +947,11 @@ class ObjectStorage:
 	def use( self, *classes ):
 		"""Makes this storage register itself with the given classes."""
 		for c in classes:
-			if c.STORAGE == self: continue
-			assert c.STORAGE is None, "Class %s already has a STORAGE" % (c)
+			name = getCanonicalName(c)
 			c.STORAGE = self
-			self._declaredClasses[getCanonicalName(c)] = c
-			Storable.DeclareClass(c)
+			if name not in self._declaredClasses:
+				self._declaredClasses[name] = c
+				Storable.DeclareClass(c)
 		return self
 
 	def release( self ):
