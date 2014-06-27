@@ -375,14 +375,7 @@ class IndexStorage(object):
 	def keys( self, start=0, end=None, count=None, order=0):
 		"""Returns the given keys in database order (default), ascending order (order > 0)
 		or descending order (order < 0)"""
-		keys = None
-		# TODO: We should add an ORDERED_KEYS capability to the the backend
-		# and make sure to use it so that we don't have to grab all the keys
-		# and sort them in memory. This is OK for a couple of thousand elements
-		# but definitely not OK for a lot of data.
-		if   order == 0: keys = self.forwardBackend.keys()
-		elif order >  0: keys = sorted(self.forwardBackend.keys(),reverse=False)
-		else           : keys = sorted(self.forwardBackend.keys(),reverse=True)
+		keys = self.forwardBackend.keys(order=order)
 		i = 0
 		if count is not None: end = start + count
 		for k in keys:

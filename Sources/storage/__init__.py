@@ -487,12 +487,17 @@ class Backend(object):
 	of the data. This should be used if you really want to make sure that
 	the data is commited to the underlying storage."""
 
-	HAS_READ    = True
-	HAS_WRITE   = True
-	HAS_STREAM  = False
-	HAS_FILE    = False
-	HAS_PUBLISH = True
-	HAS_RAW     = False
+	ORDER_NONE       =  0
+	ORDER_ASCENDING  =  1
+	ORDER_DESCENDING = -1
+
+	HAS_READ     = True
+	HAS_WRITE    = True
+	HAS_STREAM   = False
+	HAS_FILE     = False
+	HAS_PUBLISH  = True
+	HAS_RAW      = False
+	HAS_ORDERING = False
 
 	def __init__( self ):
 		self._onPublish   = []
@@ -581,7 +586,7 @@ class Backend(object):
 	def count( self, key=None ):
 		raise Exception("Backend.count not implemented")
 
-	def keys( self, collection=None ):
+	def keys( self, collection=None, order=ORDER_NONE ):
 		raise Exception("Backend.keys not implemented")
 
 	def path( self, key):
@@ -696,8 +701,8 @@ class MultiBackend( Backend ):
 	def count( self, key=None ):
 		return self._readBackend.count(key)
 
-	def keys( self, collection=None ):
-		return self._readBackend.keys(key)
+	def keys( self, collection=None, order=Backend.ORDER_NONE ):
+		return self._readBackend.keys(key, order)
 
 	def path( self, key):
 		"""Returns the physical path of the file used to store
@@ -755,8 +760,11 @@ class MemoryBackend(Backend):
 		assert key is None, "Not implemented"
 		return len(self.values)
 
-	def keys( self, collection=None ):
-		for key in self.values.keys():
+	def keys( self, collection=None, order=Backend.ORDER_NONE ):
+		keys = self.values.keys()
+		if   order == Backend.ORDER_ASCENDING:  keys = sorted(keys)
+		elif order == Backend.ORDER_DESCENDING: keys = sorted(keys, reverse=True)
+		for key in keys:
 			yield self._deserialize(key=key)
 
 	def clear( self ):
@@ -840,8 +848,11 @@ class DBMBackend(Backend):
 		if data is None: return data
 		else: return self._deserialize(data=data)
 
-	def keys( self, collection=None ):
-		for key in self.values.keys():
+	def keys( self, collection=None, order=Backend.ORDER_NONE ):
+		keys = self.values.keys()
+		if   order == Backend.ORDER_ASCENDING:  keys = sorted(keys)
+		elif order == Backend.ORDER_DESCENDING: keys = sorted(keys, reverse=True)
+		for key in keys:
 			yield self._deserialize(key=key)
 
 	def clear( self ):
@@ -904,25 +915,27 @@ class DirectoryBackend(Backend):
 	# BACKEND METHODS
 	# =========================================================================
 
-	def keys( self, prefix=None):
+	def keys( self, prefix=None, order=Backend.ORDER_NONE):
 		"""Iterates through all (or the given subset) of keys in this storage."""
-		print "PREFIX", prefix
-		assert not prefix or type(prefix) in (str,unicode) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
-		if prefix and type(prefix) in (tuple, list): prefix = prefix[0]
-		ext_len = len(self.DATA_EXTENSION)
-		if not prefix:
-			prefix_path = self.root
+		if order == Backend.ORDER_ASCENDING or order == Backend.ORDER_DESCENDING:
+			for k in sorted(self.keys(prefix), reverse=order==Backend.ORDER_DESCENDING):
+				yield k
 		else:
-			prefix_path = self.path(prefix or "")
-			if ext_len: prefix_path = prefix_path[:-ext_len]
-		print "P", prefix, prefix_path
-		for root, dirnames, filenames in os.walk(self.root):
-			for f in filenames:
-				if not f.endswith(self.DATA_EXTENSION): continue
-				path = root + os.sep + f
-				key  = self.pathToKey( self, path )
-				if prefix and not key.startswith(prefix): continue
-				yield key
+			assert not prefix or type(prefix) in (str,unicode) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
+			if prefix and type(prefix) in (tuple, list): prefix = prefix[0]
+			ext_len = len(self.DATA_EXTENSION)
+			if not prefix:
+				prefix_path = self.root
+			else:
+				prefix_path = self.path(prefix or "")
+				if ext_len: prefix_path = prefix_path[:-ext_len]
+			for root, dirnames, filenames in os.walk(self.root):
+				for f in filenames:
+					if not f.endswith(self.DATA_EXTENSION): continue
+					path = root + os.sep + f
+					key  = self.pathToKey( self, path )
+					if prefix and not key.startswith(prefix): continue
+					yield key
 
 	def count( self, prefix=None):
 		"""Returns the numbers of keys that match the given prefix(es)"""
