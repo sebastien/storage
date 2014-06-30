@@ -652,6 +652,10 @@ class Relation(object):
 		except StopIteration, e:
 			return True
 
+	def contains( self, objectOrID ):
+		"""Alias for has"""
+		return self.has(objectOrID)
+
 	def has( self, objectOrID ):
 		oid = objectOrID.oid if isinstance(objectOrID, StoredObject) else objectOrID
 		for v in self.get(resolve=False):

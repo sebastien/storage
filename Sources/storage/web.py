@@ -222,6 +222,12 @@ class StorageServer(retro.web.Component):
 				del kwargs[""]
 			else:
 				args   = None
+		else:
+			# If we're not posting, then we might want to grab the parameters from
+			# the url. This is temporary, as the call will fail if extra, non-matching
+			# kwargs/params are given.
+			if not args and not kwargs:
+				kwargs = request.params()
 		if not storable: return request.notFound()
 		# We restore the values, if any
 		args   = [restore(_) for _ in args] if args else []
@@ -272,6 +278,7 @@ class StorageServer(retro.web.Component):
 				# TODO: What about restrict?
 				handler = lambda request, sid, *args, **kwargs: self.onStorableInvokeMethod( s, name, contentType, request, sid, *args, **kwargs )
 				urls    = {}
+				if isinstance(methods, str): methods = (methods,)
 				for method in (methods or ("GET", "POST")):
 					urls[method.upper()] = url + "/{sid:segment}/" + invoke_url
 				self.registerHandler(handler, urls)
