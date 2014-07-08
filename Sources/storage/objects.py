@@ -325,8 +325,7 @@ class StoredObject(Storable):
 		properties defined in `PROPERTIES`"""
 		# TODO: Check type
 		assert name in self.PROPERTIES, "Property `%s` not one of: %s" % (name, self.PROPERTIES.keys() + self.RELATIONS.keys())
-		if not name in self._properties: self._properties[name] = Property(name)
-		self._properties[name].set(value)
+		self.ensureProperty(name).set(value)
 		if not self._isNew:
 			# We update the `updates` map only if the object is not new (has
 			# been registered)
@@ -346,11 +345,19 @@ class StoredObject(Storable):
 			self._updates[name] = self._updates["oid"] = max(getTimestamp() if timestamp is None else timestamp, self._updates.get(name, -1))
 		return self
 
+	def ensureProperty( self, name ):
+		"""Returns the Property instance bound to the given name"""
+		if  name in self.__class__.PROPERTIES:
+			if name not in self._properties:
+				self._properties[name] = Property(name, self)
+			return self._properties[name]
+		else:
+			return None
+
 	def getProperty( self, name ):
 		"""Returns the property value bound to the given name"""
 		if  self.__class__.PROPERTIES.has_key(name):
-			if not name in self._properties: self._properties[name] = Property(name)
-			return self._properties[name].get()
+			return self.ensureProperty(name).get()
 		else:
 			raise Exception("Property %s.%s is not declared in PROPERTIES" % (self.__class__.__name__, name))
 
@@ -525,21 +532,39 @@ class Property(object):
 	allows to lazily convert primitives to their Storable objects, avoiding
 	chain reactions of loading."""
 
-	def __init__(self, name):
-		self.name  = name
-		self.value = None
-		self.restored = False
+	def __init__(self, name, storedObject):
+		self.name         = name
+		self.value        = None
+		self.restored     = False
+		assert storedObject, "Property requires stored object instance"
+		self.storedObject = storedObject
+		cap_name          = name[0].upper() + name[1:]
+		setter_name       = "set" + cap_name
+		getter_name       = "get" + cap_name
+		self._setter      = getattr(storedObject, setter_name) if hasattr(storedObject, setter_name) else None
+		self._getter      = getattr(storedObject, getter_name) if hasattr(storedObject, getter_name) else None
 
 	def set( self, value ):
+		if self._setter:
+			# We only use the setter if it is defined
+			old_value = value
+			value     = self._setter(value)
+			# If the setter returns None or self, we restore the old_value
+			if value is None or value is self.storedObject: value = old_value
 		self.value = value
 		assert not isinstance(value, Property)
 		self.restored = False
 		return self
 
 	def get( self ):
-		if not self.restored and self.value:
-			self.value = restore(self.value)
+		if not self.restored:
+			value = self.value = restore(self.value) if self.value else self.value
 			self.restored = True
+			if self._getter:
+				old_value = value
+				value = self._getter(value)
+				# If the setter returns None or self, we restore the old_value
+				if value is None or value is self.storedObject: value = old_value
 		return self.value
 
 	def export( self, **options ):
