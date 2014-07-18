@@ -203,7 +203,8 @@ def parseTimestamp( t ):
 class Identifier(object):
 
 	NODE_ID    = 0
-	TIME_BASE  = calendar.timegm(datetime.datetime(2000, 1, 1, 0, 0, 0, 0).utctimetuple())
+	DATE_BASE  = datetime.datetime(2000, 1, 1, 0, 0, 0, 0)
+	TIME_BASE  = calendar.timegm(DATE_BASE.utctimetuple())
 
 	@classmethod
 	def ParseNodeID(cls, host=None):
@@ -251,9 +252,9 @@ class Identifier(object):
 		The `rand` and `nodes` parameters tell how many `R` and `N` there
 		wil be in the numbers.
 		"""
-		base = long((time.time() - cls.TIME_BASE)) * (10 ** (nodes + rand))
+		t    = long((datetime.datetime.utcnow() - cls.DATE_BASE).total_seconds() * 1000)
+		base = t * (10 ** (nodes + rand))
 		r    = random.randint(0,(10**rand)-1)      * (10 ** (nodes))
-		print base, r, cls.NODE_ID
 		return base + r + cls.NODE_ID
 
 	@classmethod
