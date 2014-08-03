@@ -306,6 +306,16 @@ class Interface:
 		self.indexes = self._createIndexes(path)
 		self.server  = self._createStorageServer(prefix)
 
+	def first( self, iterable, count=10 ):
+		"""A utiilty function to select the first 10 elements
+		of an iterator."""
+		while count > 0:
+			try:
+				yield iterable.next()
+				count -= 1
+			except StopIteration, e:
+				break
+
 	def _createObjectStorage( self, prefix ):
 		return ObjectStorage(self.OBJECT_BACKEND(prefix)).use(*[_ for _ in self.CLASSES if issubclass(_, StoredObject)])
 

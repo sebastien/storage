@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 14-Jul-2008
-# Last mod  : 25-Jun-2014
+# Last mod  : 03-Aug-2014
 # -----------------------------------------------------------------------------
 
 # FIXME: Relations should be exported as shallow by default (objects can change)
@@ -34,7 +34,7 @@
 # FIXME: How to update the objects when the db has changed locally
 
 import time, threading, json, weakref, types, datetime, traceback
-from   storage import Storable, Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, restore, isSame, getTimestamp
+from   storage import Storable, Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, restore, isSame, getTimestamp, NOTHING
 
 __pychecker__ = "unusednames=options"
 
@@ -325,8 +325,10 @@ class StoredObject(Storable):
 		properties defined in `PROPERTIES`"""
 		# TODO: Check type
 		assert name in self.PROPERTIES, "Property `%s` not one of: %s" % (name, self.PROPERTIES.keys() + self.RELATIONS.keys())
-		self.ensureProperty(name).set(value)
 		if not self._isNew:
+			old_value = self.getProperty(name)
+		new_value = self.ensureProperty(name).set(value)
+		if not self._isNew and old_value != new_value:
 			# We update the `updates` map only if the object is not new (has
 			# been registered)
 			self._updates[name] = self._updates["oid"] = max(getTimestamp() if timestamp is None else timestamp, self._updates.get(name, -1))
@@ -554,9 +556,10 @@ class Property(object):
 		self.value = value
 		assert not isinstance(value, Property)
 		self.restored = False
-		return self
+		return self.value
 
 	def get( self ):
+		value = None
 		if not self.restored:
 			value = self.value = restore(self.value) if self.value else self.value
 			self.restored = True
