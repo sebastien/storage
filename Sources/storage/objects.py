@@ -33,6 +33,8 @@
 
 # FIXME: How to update the objects when the db has changed locally
 
+# TODO: Use JSON-patch to record history of changes
+
 import time, threading, json, weakref, types, datetime, traceback
 from   storage import Storable, Identifier, getCanonicalName, asPrimitive, asJSON, unJSON, restore, isSame, getTimestamp, NOTHING
 

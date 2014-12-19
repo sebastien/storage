@@ -73,11 +73,11 @@ class Image(StoredRaw):
 
 	def getURL(self):
 		# FIXME: Should be done by storage.web
-		return "api/image/%s/full" % (self.rid)
+		return "api/image/%s/full" % (self.oid)
 
 	def getPreviewURL(self):
 		# FIXME: Should be done by storage.web
-		return "api/image/%s/preview" % (self.rid)
+		return "api/image/%s/preview" % (self.oid)
 
 # -----------------------------------------------------------------------------
 #
@@ -126,7 +126,7 @@ class Video(StoredRaw):
 		return None
 
 	def getApiUrl(self):
-		return "/api/video/%s/preview" % (self.rid)
+		return "/api/video/%s/preview" % (self.oid)
 
 	def hasPreview( self ):
 		return self.meta("thumbnail")
@@ -159,7 +159,7 @@ class Video(StoredRaw):
 		"""
 		formats = {}
 		if self.isOriginal():
-			formats["original"] = self.rid
+			formats["original"] = self.oid
 			for _ in self.getAlternatives():
 				f          = Video.Get(_).getFormat()
 				formats[f] = _
@@ -170,9 +170,9 @@ class Video(StoredRaw):
 	def getAlternative( self, format ):
 		alternatives = self.meta("alternatives")
 		if not alternatives: return None
-		video_rid    = alternatives.get(format)
-		if not video_rid: return None
-		else: return Video.Get(video_rid)
+		video_oid    = alternatives.get(format)
+		if not video_oid: return None
+		else: return Video.Get(video_oid)
 
 	def hasAlternative( self, format ):
 		alternatives = self.meta("alternatives")
