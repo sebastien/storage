@@ -54,6 +54,9 @@ class Image(StoredRaw):
 		else:
 			return self.getFull()
 
+	def hasPreview( self ):
+		return self.meta("preview")
+
 	def setPreview( self, data ):
 		self.meta("preview", base64.b64encode(data))
 		return self
