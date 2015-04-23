@@ -5,7 +5,7 @@
 # License   : Revised BSD License                              © FFunction, inc
 # -----------------------------------------------------------------------------
 # Creation  : 13-Aug-2012
-# Last mod  : 17-Jun-2014
+# Last mod  : 22-Apr-2015
 # -----------------------------------------------------------------------------
 
 import types, json
@@ -235,6 +235,7 @@ class StorageServer(retro.web.Component):
 		if not contentType:
 			return request.returns(method(*args, **kwargs))
 		else:
+			if instance(contentType, types.FunctionType): contentType = contentType(storable)
 			return request.respond(method(*args, **kwargs), contentType=contentType)
 
 	def onStorableInvokeOperation( self, storableClass, name, request, *args, **kwargs ):

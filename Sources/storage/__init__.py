@@ -5,13 +5,13 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 04-Nov-2013
+# Last mod  : 10-Apr-2015
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
 import uuid, calendar, random
 
-__version__ = "0.7.3"
+__version__ = "0.7.4"
 
 # TODO: Rework the FILE/RAW interface
 # TODO: Add worker to sync
@@ -354,6 +354,35 @@ class Types(object):
 	@staticmethod
 	def REFERENCE(clss):
 		return clss.__name__
+
+	@classmethod
+	def AsString( cls, value ):
+		if isinstance(value, str) or isinstance(value, unicode):
+			return value
+		else:
+			return unicode(value)
+
+	@classmethod
+	def AsBoolean( cls, value ):
+		if isinstance(value, str) or isinstance(value, unicode) and value.lower() == "false":
+			return False
+		return value and True or False
+
+	@classmethod
+	def AsDate(cls, value):
+		"""We expect a string of format yyyy-mm-dd we don't do any validation
+		We sipmly conver it to a list if it isn't"""
+		if isinstance(value, datetime.datetime):
+			return list(value.timetuple())
+		if isinstance(value, list) or isinstance(value, tuple):
+			return value
+		# We expect the date to be formatted as YYYY-MM-DD
+		try:
+			date = datetime.datetime.strptime(value, '%Y-%m-%d')
+			date = list(date.timetuple())
+		except:
+			date = None
+		return date
 
 # -----------------------------------------------------------------------------
 #

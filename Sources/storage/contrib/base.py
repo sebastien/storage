@@ -46,6 +46,9 @@ class File(StoredRaw):
 class Image(StoredRaw):
 	"""Stores image files"""
 
+	def getFormat( self ):
+		return self.meta("format")
+
 	@http("preview", contentType="image/jpeg; charset=binary")
 	def getPreview( self ):
 		meta = self.meta()
@@ -70,7 +73,7 @@ class Image(StoredRaw):
 	def getSize( self ):
 		return self.getWidth(), self.getHeight()
 
-	@http("full", contentType="image/jpeg; charset=binary")
+	@http("full", contentType=lambda _:"image/{0}; charset=binary".format(_.meta("ext") or "jpeg"))
 	def getFull( self ):
 		return "".join(self.data())
 
