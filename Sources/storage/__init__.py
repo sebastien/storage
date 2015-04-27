@@ -243,10 +243,10 @@ class Identifier(object):
 	def Stamp( cls, rand=3, nodes=4 ):
 		"""Returns an 64-bit integer timestamp that is made like this.
 
-		> TTTTTTTTTTTTTTT RRR NNNN
-		> |               |   |
-		> |               |   Node ID [0-9999]
-		> |               Random [0-999]
+		> TTTTTTTTTTTTTTT NNNN RRR
+		> |               |    |
+		> |               |    Random [0-999]
+		> |               Node ID [0-9999]
 		> Timestamp since TIMEBASE
 
 		The `rand` and `nodes` parameters tell how many `R` and `N` there
@@ -254,25 +254,26 @@ class Identifier(object):
 		"""
 		t    = long((datetime.datetime.utcnow() - cls.DATE_BASE).total_seconds() * 1000)
 		base = t * (10 ** (nodes + rand))
-		r    = random.randint(0,(10**rand)-1)      * (10 ** (nodes))
-		return base + r + cls.NODE_ID
+		n    = cls.NODE_ID * (10 ** rand)
+		r    = random.randint(0,(10**rand)-1)
+		return base + n + r
 
 	@classmethod
 	def Timestamp( cls, rand=3, nodes=4 ):
 		"""A version of the `stamp` that's more readable but slightly longer.
 
-		> YYYYMMDDHHMMSSMMMMMM RRR NNNN
+		> YYYYMMDDHHMMSSMMMMMM NNNNN RRR
 		> |                    |   |
-		> |                    |   Node ID [0-9999]
-		> |                    Random [0-999]
+		> |                    |   Random [0-999]
+		> |                    Node ID [0-9999]
 		> Timestamp since TIMEBASE
 
 		"""
 		date = getTimestamp ()
 		return (
-			cls.NODE_ID                                               + \
-			(random.randint(0,(10**rand)-1) * (10**nodes))            + \
-			(date                           * (10 ** (nodes + rand)))
+			(date                           * (10 ** (nodes + rand))) + \
+			cls.NODE_ID * (10 ** rand)                                + \
+			(random.randint(0,(10**rand)-1))
 		)
 
 # -----------------------------------------------------------------------------

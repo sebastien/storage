@@ -235,7 +235,7 @@ class StorageServer(retro.web.Component):
 		if not contentType:
 			return request.returns(method(*args, **kwargs))
 		else:
-			if instance(contentType, types.FunctionType): contentType = contentType(storable)
+			if isinstance(contentType, types.FunctionType): contentType = contentType(storable)
 			return request.respond(method(*args, **kwargs), contentType=contentType)
 
 	def onStorableInvokeOperation( self, storableClass, name, request, *args, **kwargs ):
