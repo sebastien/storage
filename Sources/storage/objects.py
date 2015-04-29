@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 14-Jul-2008
-# Last mod  : 03-Aug-2014
+# Last mod  : 27-Apr-2015
 # -----------------------------------------------------------------------------
 
 # FIXME: Relations should be exported as shallow by default (objects can change)
@@ -457,7 +457,9 @@ class StoredObject(Storable):
 	def export( self, **options ):
 		"""Returns a dictionary representing this object. By default, it
 		just returns the object id (`oid`) and its class (`class`)."""
-		res   = {"oid": self.oid, "type":self.getTypeName(), "updates":self._updates}
+		# SEE: http://stackoverflow.com/questions/1379934/large-numbers-erroneously-rounded-in-javascript
+		# We cannot allow IDs to be long numbers...
+		res   = {"oid": str(self.oid), "type":self.getTypeName(), "updates":self._updates}
 		depth = 1
 		if "depth" in options: depth = options["depth"]
 		if depth > 0:

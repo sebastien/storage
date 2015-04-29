@@ -5,7 +5,7 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 07-Aug-2012
-# Last mod  : 03-Nov-2013
+# Last mod  : 27-Apr-2015
 # -----------------------------------------------------------------------------
 
 import types, weakref, threading, io, base64
@@ -265,10 +265,12 @@ class StoredRaw(Storable):
 	def export( self, **options ):
 		depth = 1
 		if "depth" in options: depth = options["depth"]
+		# SEE: http://stackoverflow.com/questions/1379934/large-numbers-erroneously-rounded-in-javascript
+		# We cannot allow IDs to be long numbers...
 		res = dict(
-			oid=self.oid,
-			timestamp=self.timestamp,
-			type=self.getTypeName()
+			oid       = str(self.oid),
+			timestamp = self.timestamp,
+			type      = self.getTypeName()
 		)
 		if depth > 0: res.update(self._meta)
 		# NOTE: This is just for data export/synchronization. It's not recommanded

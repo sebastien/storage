@@ -5,13 +5,13 @@
 # License   : BSD License
 # -----------------------------------------------------------------------------
 # Creation  : 26-Apr-2012
-# Last mod  : 10-Apr-2015
+# Last mod  : 27-Apr-2015
 # -----------------------------------------------------------------------------
 
 import os, sys, json, datetime, types, shutil, time, collections
 import uuid, calendar, random
 
-__version__ = "0.7.4"
+__version__ = "0.8.0"
 
 # TODO: Rework the FILE/RAW interface
 # TODO: Add worker to sync
@@ -129,7 +129,9 @@ def isSame( a, b ):
 		b_type = b.get("type")
 		b_oid  = b.get("oid")
 	if a_type is None or a_oid is None or b_type is None or b_oid is None: return False
-	return a_type == b_type and a_oid == b_oid
+	# NOTE: We have to assume that IDs are string, or force them to, as
+	# JavaScript does not supprot long integers
+	return a_type == b_type and str(a_oid) == str(b_oid)
 
 def unJSON( text, useRestore=True ):
 	"""Parses the given text as JSON, and if the result is an object, will try
