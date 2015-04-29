@@ -925,7 +925,7 @@ class DirectoryBackend(Backend):
 	HAS_STREAM          = True
 	HAS_RAW             = True
 	DATA_EXTENSION      = ".json"
-	RAW_EXTENSION       = ".raw"
+	RAW_EXTENSION       = ".blob"
 	DEFAULT_STREAM_SIZE = 1024 * 100
 
 	def __init__( self, root, pathToKey=None, keyToPath=None, writer=None, reader=None, extension=None):
