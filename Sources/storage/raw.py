@@ -51,7 +51,7 @@ Allows to store raw data and its meta-information
 class StoredRaw(Storable):
 
 	OID_GENERATOR = Identifier.Stamp
-	RESERVED      = ("type", "timestamp", "oid")
+	RESERVED      = ("type", "oid", "updates")
 	COLLECTION    = None
 	STORAGE       = None
 
@@ -88,8 +88,8 @@ class StoredRaw(Storable):
 						# NOTE: We manage reserved properites at this level
 						if key == "type" or key == "oid":
 							continue
-						if key == "timestamp":
-							obj._meta["timestamp"] = max(value, obj._meta.get("timestamp", 0))
+						elif key == "updates":
+							obj._updates = value
 						else:
 							obj.meta(key, value)
 					return obj
@@ -150,17 +150,18 @@ class StoredRaw(Storable):
 		return cls.COLLECTION
 
 	def __init__( self, data=None, restored=False, **meta ):
-		if "timestamp" in meta: self.timestamp = meta["timestamp"]
-		else: self.timestamp = getTimestamp()
 		if meta.has_key("oid"): self.oid = meta["oid"]
 		else: self.oid       = StoredRaw.GenerateOID()
 		self._meta           = {}
 		self._hasDataChanged = True
 		self._data           = data
+		self._updates        = {}
 		if data is None: self._hasDataChanged = False
 		for k in meta:
 			if k not in self.RESERVED:
 				self._meta[k] = meta[k]
+		if meta and "updates" in meta: self._updates.update(meta.get("updates"))
+		if "oid" not in self._updates: self._updates["oid"] = getTimestamp()
 		if self.STORAGE: self.STORAGE.register(self, restored=restored)
 
 	def getID( self ):
@@ -188,9 +189,11 @@ class StoredRaw(Storable):
 			self.data = None
 		self._hasDataChanged = False
 
-	def setData( self, data ):
+	def setData( self, data, timestamp=None ):
 		self._data           = data
 		self._hasDataChanged = True
+		# FIXME: Not sure what to do with timestamp
+		self._updates["data"] = self._updates["oid"] = max(getTimestamp() if timestamp is None else timestamp, self._updates.get("data", -1))
 		return self
 
 	def setMeta( self, meta=NOTHING, **options ):
@@ -198,12 +201,24 @@ class StoredRaw(Storable):
 			assert type(meta) is dict, "StoredRaw.setMeta only accepts dict"
 			self._meta = meta
 		for k in options:
-			self._meta[k] = options[k]
+			if k not in self.RESERVED:
+				self._meta[k] = options[k]
+		# FIXME: Not sure what to do with timestamp
+		timestamp = None
+		self._updates["meta"] = self._updates["oid"] = max(getTimestamp() if timestamp is None else timestamp, self._updates.get("meta", -1))
 		return self
 
 	def clearMeta( self ):
 		self.meta = {}
 		return self
+
+	def getUpdateTime( self, key="oid"):
+		"""Returns the time at with the given object (or key) was updated. The time
+		is returned as a storage timestamp."""
+		if self._updates:
+			return self._updates.get(key, 0)
+		else:
+			return 0
 
 	def update( self, propertiesAndRelations ):
 		"""Compatiblity method for Storable, is an alias to setMeta"""
@@ -269,8 +284,8 @@ class StoredRaw(Storable):
 		# We cannot allow IDs to be long numbers...
 		res = dict(
 			oid       = str(self.oid),
-			timestamp = self.timestamp,
-			type      = self.getTypeName()
+			type      = self.getTypeName(),
+			updates   = self._updates,
 		)
 		if depth > 0: res.update(self._meta)
 		# NOTE: This is just for data export/synchronization. It's not recommanded
