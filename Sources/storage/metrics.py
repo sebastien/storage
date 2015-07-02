@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 
 import datetime, json, collections
-from   storage import Operations, DirectoryBackend, getCanonicalName, getTimestamp, Storable, NOTHING
+from   storage import Operations, DirectoryBackend, MemoryBackend, getCanonicalName, getTimestamp, Storable, NOTHING
 
 __pychecker__ = "unusednames=options"
 
@@ -206,19 +206,17 @@ class MetricsDirectoryBackend(DirectoryBackend):
 
 	FILE_EXTENSION = ".metric"
 
-	def _defaultWriter( self, backend, operation, key, data ):
-		key, data = self._serialize(key, data)
+	def _defaultWriter( self, backend, operation, path, data ):
 		line = operation + "\t" + data
-		return self.appendFile(self.getFileName(key), line)
+		return self.appendFile(path, line)
 
 	def get( self, key, after=None, before=None ):
 		# FIXME: Should be smart when it comes to finding the offset of
 		# after/before
-		with file(self.getFileName(key)) as f:
+		with file(self.path(key), "rb") as f:
 			for line in f.readlines():
 				data = self._deserialize(data=line)
 				yield data
-
 
 	def _serialize( self, key=NOTHING, data=NOTHING ):
 		"""Serializes the given metric to a string."""
@@ -229,7 +227,7 @@ class MetricsDirectoryBackend(DirectoryBackend):
 				data["name"],
 				json.dumps(data["value"]),
 				json.dumps(data.get("meta")),
-			)
+			) if type(data) not in (unicode, str) else data
 		if key is not NOTHING:
 			assert type(key) in (str, unicode), self.__class__.__name__ + "._serialize only accepts strings as key."
 			key = str(key)

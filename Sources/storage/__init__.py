@@ -934,6 +934,7 @@ class DirectoryBackend(Backend):
 		Backend.__init__(self)
 		if not root.endswith("/"): root += "/"
 		self.root         = root
+		# FIXME: This should be redefined
 		self.keyToPath    = keyToPath    or self._defaultKeyToPath
 		self.pathToKey    = pathToKey    or self._defaultPathToKey
 		self.writer       = writer       or self._defaultWriter
