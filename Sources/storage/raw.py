@@ -161,7 +161,7 @@ class StoredRaw(Storable):
 			if k not in self.RESERVED:
 				self._meta[k] = meta[k]
 		if meta and "updates" in meta: self._updates.update(meta.get("updates"))
-		if "oid" not in self._updates: self._updates["oid"] = getTimestamp()
+		if "oid" not in self._updates: self._updates["oid"] = 0
 		if self.STORAGE: self.STORAGE.register(self, restored=restored)
 
 	def getID( self ):

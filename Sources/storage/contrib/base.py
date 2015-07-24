@@ -85,6 +85,12 @@ class Image(StoredRaw):
 		# FIXME: Should be done by storage.web
 		return "api/image/%s/preview" % (self.oid)
 
+	def export( self, **options ):
+		r = super(Image, self).export(**options)
+		if not options.get("preview") and "preview" in r:
+			del r["preview"]
+		return r
+
 # -----------------------------------------------------------------------------
 #
 # VIDEO (RAW)
