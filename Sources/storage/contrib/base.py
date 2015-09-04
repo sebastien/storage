@@ -6,7 +6,7 @@
 # License   : Proprietary                                      © FFunction, inc
 # -----------------------------------------------------------------------------
 # Creation  : 03-Jun-2012
-# Last mod  : 27-Sep-2013
+# Last mod  : 05-Sep-2015
 # -----------------------------------------------------------------------------
 
 import base64
@@ -312,11 +312,11 @@ class Interface:
 			self.INSTANCE = self()
 		return self.INSTANCE
 
-	def __init__( self, path="Data/", prefix="/api" ):
+	def __init__( self, path="Data/", prefix="/api", readonly=False ):
 		self.objects = self._createObjectStorage(path)
 		self.raw     = self._createRawStorage(path)
 		self.indexes = self._createIndexes(path)
-		self.server  = self._createStorageServer(prefix)
+		self.server  = self._createStorageServer(prefix, readonly=readonly)
 
 	def first( self, iterable, count=10 ):
 		"""A utiilty function to select the first 10 elements
@@ -337,8 +337,8 @@ class Interface:
 	def _createIndexes( self, prefix ):
 		return Indexes(self.INDEX_BACKEND, prefix).use(*[_ for _ in self.CLASSES if issubclass(_, Storable)])
 
-	def _createStorageServer( self, prefix ):
-		return StorageServer(prefix).use(*[_ for _ in self.CLASSES if StorageDecoration.Has(_)])
+	def _createStorageServer( self, prefix, readonly=False ):
+		return StorageServer(prefix, readonly=readonly).use(*[_ for _ in self.CLASSES if StorageDecoration.Has(_)])
 
 	def sync( self ):
 		"""Calls `sync()` on all the backends."""

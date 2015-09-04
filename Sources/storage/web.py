@@ -5,7 +5,7 @@
 # License   : Revised BSD License                              © FFunction, inc
 # -----------------------------------------------------------------------------
 # Creation  : 13-Aug-2012
-# Last mod  : 22-Apr-2015
+# Last mod  : 04-Sep-2015
 # -----------------------------------------------------------------------------
 
 import types, json
@@ -107,10 +107,11 @@ class StorageServer(retro.web.Component):
 
 	LIST_COUNT = 20
 
-	def __init__( self, prefix="/api", classes=None ):
+	def __init__( self, prefix="/api", classes=None, readonly=False ):
 		retro.web.Component.__init__(self)
 		self.PREFIX          = prefix
 		self.storableClasses = []
+		self.readonly        = readonly
 		if classes: self.add(*classes)
 
 	def use( self, *storableClasses ):
@@ -131,17 +132,20 @@ class StorageServer(retro.web.Component):
 	def create( self, request, storableClass ):
 		"""Creates a new instance of the given storable class based on the
 		given request data."""
+		if self.readonly: return request.notAuthorized()
 		info = StorageDecoration.Get(storableClass)
 		return self.onStorableCreate(storableClass, info, request)
 
 	def remove( self, request, storableClass, sid ):
 		"""Removes the given storable."""
+		if self.readonly: return request.notAuthorized()
 		info = StorageDecoration.Get(storableClass)
 		return self.onStorableRemove(storableClass, info, request, sid)
 
 	def update( self, request, storableClass, sid ):
 		"""Updates an existing instance of the given storable class based on the
 		given request data."""
+		if self.readonly: return request.notAuthorized()
 		info = StorageDecoration.Get(storableClass)
 		return self.onStorableUpdate(storableClass, info, request, sid)
 
