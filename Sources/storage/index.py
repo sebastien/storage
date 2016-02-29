@@ -268,7 +268,7 @@ class Index(object):
 		try:
 			next(self(key))
 			return True
-		except StopIteration, e:
+		except StopIteration as e:
 			return False
 
 	def count( self, key ):

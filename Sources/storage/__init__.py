@@ -221,10 +221,10 @@ class Identifier(object):
 				return int(name_suffix[-1])
 			except ValueError:
 				return None
-		elif os.environ.has_key("NODE_ID"):
+		elif "NODE_ID" in os.environ:
 			return int(os.environ.get("NODE_ID"))
 		elif os.path.exists("/etc/hostname"):
-			with file("/etc/hostname") as f:
+			with open("/etc/hostname") as f:
 				for line in f.readlines():
 					res = cls.ParseNodeID(line)
 					if res is not None:
@@ -831,7 +831,7 @@ class DBMBackend(Backend):
 	def _open( self, mode="c"):
 		try:
 			self.values   = self._dbm.open(self.path, "c")
-		except self._dbm.error, e:
+		except self._dbm.error as e:
 			raise Exception("Cannot open DBM at path {}:{}".format(self.path, e))
 
 	def _tryAdd( self, key, data ):
@@ -844,7 +844,7 @@ class DBMBackend(Backend):
 				try:
 					self.values[key] = data
 					return True
-				except self._dbm.error, e:
+				except self._dbm.error as e:
 					time.sleep(0.100 * retries)
 					if retries == 0:
 						raise Exception("{0} in {1}.db with key={2} data={3}".format(e,self.path,key,data))
@@ -1076,7 +1076,7 @@ class DirectoryBackend(Backend):
 			try:
 				shutil.copyfileobj(data, handle)
 				self._closeFileHandle(handle)
-			except Exception, e:
+			except Exception as e:
 				self._closeFileHandle(handle)
 				os.unlink(path)
 				raise e
@@ -1088,7 +1088,7 @@ class DirectoryBackend(Backend):
 			try:
 				handle.write(data)
 				self._closeFileHandle(handle)
-			except Exception, e:
+			except Exception as e:
 				self._closeFileHandle(handle)
 				os.unlink(path)
 				raise e

@@ -10,6 +10,7 @@
 
 import types, json
 import retro.web
+from   retro.core  import unicode
 from   storage     import Storable, restore
 from   storage.raw import StoredRaw
 

@@ -674,14 +674,14 @@ class Relation(object):
 	def one( self, index=0 ):
 		try:
 			return self.get(resolve=True, start=index).next()
-		except StopIteration, e:
+		except StopIteration as e:
 			return None
 
 	def isEmpty( self ):
 		try:
 			self.get(resolve=False).next()
 			return False
-		except StopIteration, e:
+		except StopIteration as e:
 			return True
 
 	def contains( self, objectOrID ):
@@ -832,7 +832,7 @@ class ObjectStorage:
 			if isinstance(StoredObject, StoredObject):
 				storedObject.setStorage(self)
 			self.lock.release()
-		except Exception, e:
+		except Exception as e:
 			# We make sure to always release the lock here
 			self.lock.release()
 			exception_format = repr(traceback.format_exc()).split("\\n")
@@ -865,7 +865,7 @@ class ObjectStorage:
 			res = self._get(key)
 			self.lock.release()
 			return res
-		# except Exception, e:
+		# except Exception as e:
 		# 	self.lock.release()
 		# 	raise e
 

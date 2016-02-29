@@ -325,7 +325,7 @@ class Interface:
 			try:
 				yield iterable.next()
 				count -= 1
-			except StopIteration, e:
+			except StopIteration as e:
 				break
 
 	def _createObjectStorage( self, prefix ):
