@@ -928,11 +928,11 @@ class ObjectStorage:
 		"""Lists (iterates) the stored objects belonging to the given class. Note that
 		there is no guaranteed ordering in the keys, so this might return different
 		results depending on how many keys there are."""
-		end = start + count if end is None else end
+		end = end if end >= 0 else (start + count if count > 0 else None)
 		i   = 0
 		for key in self.keys(storedObjectClasses):
 			if count != 0:
-				if (i >= start and i < end):
+				if i >= start and (i < end or end is None):
 					if count > 0: count -= 1
 					yield self.get(key)
 			i += 1

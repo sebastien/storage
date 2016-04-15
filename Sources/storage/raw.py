@@ -467,7 +467,7 @@ class RawStorage:
 			yield key
 
 	def list( self, count=-1, start=0, end=None, types=None ):
-		end = start + count if end is None else end
+		end = end if end >= 0 else (start + count if count > 0 else None)
 		i   = 0
 		if types and type(types) not in (list, tuple):types=(types,)
 		# FIXME: Should be updated according to raw storage
@@ -475,7 +475,7 @@ class RawStorage:
 		meta_suffix_len = len(self.META_SUFFIX)
 		previous_key    = None
 		for key in self.keys(types):
-			if count < 0 or (i >= start and (i < end or end < 0)):
+			if count !=0 and (i >= start and (i < end or end is None)):
 				if key.endswith(self.DATA_SUFFIX):
 					key = key[:-data_suffix_len]
 				elif key.endswith(self.META_SUFFIX):
