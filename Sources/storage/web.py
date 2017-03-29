@@ -113,7 +113,20 @@ class StorageServer(retro.web.Component):
 		self.PREFIX          = prefix
 		self.storableClasses = []
 		self.readonly        = readonly
+		self._onUpdate       = []
 		if classes: self.add(*classes)
+
+	def onUpdate( self, callback ):
+		self._onUpdate.append(callback)
+		return self
+
+	def offUpdate( self, callback ):
+		self._onUpdate = [_ for _ in self._onUpdate if _ is not callback]
+		return self
+
+	def _doUpdate( self ):
+		for _ in self._onUpdate:
+			_()
 
 	def use( self, *storableClasses ):
 		"""Alias for `add`. Uses the given decorated storable classes and
@@ -177,6 +190,7 @@ class StorageServer(retro.web.Component):
 		# on new data
 		else:
 			storable = storableClass()
+		self._doUpdate()
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	def onStorableUpdate( self, storableClass, info, request, sid ):
@@ -190,6 +204,7 @@ class StorageServer(retro.web.Component):
 		else:
 			storable.update(data)
 			storable.save()
+		self._doUpdate()
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	def onStorableRemove( self, storableClass, info, request, sid ):
@@ -198,6 +213,7 @@ class StorageServer(retro.web.Component):
 		data = request.params()
 		if storable:
 			storable.remove()
+			self._doUpdate()
 			return request.returns(True)
 		else:
 			return request.notFound()
