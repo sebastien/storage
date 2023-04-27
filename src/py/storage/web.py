@@ -10,7 +10,7 @@
 
 import types, json
 import retro.web
-from   retro.core  import unicode
+from   retro.core  import str
 from   storage     import Storable, restore
 from   storage.raw import StoredRaw
 
@@ -63,7 +63,7 @@ class StorageDecoration:
 		self.httpMethods  = [methods] if isinstance(methods, str) else methods
 		# These are options to give to the object export function. If export
 		# is a string, it is assumed to be a profile.
-		if type(export) in (str,unicode): export = dict(profile=export)
+		if type(export) in (str,str): export = dict(profile=export)
 		self.export       = export or {}
 		# NOTE: We add the "web" target so that object export function can
 		# hide information that should not be communicated (ie. password)
@@ -235,7 +235,7 @@ class StorageServer(retro.web.Component):
 		method   = getattr(storable, name)
 		if request.method() == "POST":
 			request.load ()
-			kwargs = dict(request.params().items() + kwargs.items())
+			kwargs = dict(list(request.params().items()) + list(kwargs.items()))
 			# If post is passed without named arguments, it will be
 			# mapped to the '' key.
 			if "" in kwargs:
@@ -252,7 +252,7 @@ class StorageServer(retro.web.Component):
 		if not storable: return request.notFound()
 		# We restore the values, if any
 		args   = [restore(_) for _ in args] if args else []
-		kwargs = dict((k,restore(v)) for k,v in kwargs.items()) if kwargs else {}
+		kwargs = dict((k,restore(v)) for k,v in list(kwargs.items())) if kwargs else {}
 		if not contentType:
 			return request.returns(method(*args, **kwargs))
 		else:

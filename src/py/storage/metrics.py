@@ -33,7 +33,7 @@ class StoredMetric(Storable):
 	def Recognizes( self, data ):
 		if type(data) == dict:
 			for key in ("name", "value", "timestamp"):
-				if not data.has_key(key):
+				if key not in data:
 					return False
 			return True
 		else:
@@ -227,9 +227,9 @@ class MetricsDirectoryBackend(DirectoryBackend):
 				data["name"],
 				json.dumps(data["value"]),
 				json.dumps(data.get("meta")),
-			) if type(data) not in (unicode, str) else data
+			) if type(data) not in (str, str) else data
 		if key is not NOTHING:
-			assert type(key) in (str, unicode), self.__class__.__name__ + "._serialize only accepts strings as key."
+			assert type(key) in (str, str), self.__class__.__name__ + "._serialize only accepts strings as key."
 			key = str(key)
 		if   key  is NOTHING: return data
 		elif data is NOTHING: return key
@@ -242,7 +242,7 @@ class MetricsDirectoryBackend(DirectoryBackend):
 			operation, timestamp, name, value, meta = data.split("\t",5)
 			data = dict(
 				name      = name,
-				timestamp = long(timestamp),
+				timestamp = int(timestamp),
 				value     = json.loads(value),
 				meta      = json.loads(meta)
 			)

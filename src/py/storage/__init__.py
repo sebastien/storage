@@ -53,7 +53,7 @@ def asPrimitive( value, **options ):
 	options.setdefault("depth", 1)
 	if   value in (None, True, False):
 		return value
-	elif type(value) in (str, unicode, int, long, float):
+	elif type(value) in (str, str, int, int, float):
 		return value
 	elif type(value) in (tuple, list):
 		options["depth"] -= 1
@@ -105,7 +105,7 @@ def restore( value ):
 		return value
 	elif type(value) in (tuple, list):
 		# As well as in lists
-		return map(restore, value)
+		return list(map(restore, value))
 	else:
 		return value
 
@@ -254,7 +254,7 @@ class Identifier(object):
 		The `rand` and `nodes` parameters tell how many `R` and `N` there
 		wil be in the numbers.
 		"""
-		t    = long((datetime.datetime.utcnow() - cls.DATE_BASE).total_seconds() * 1000)
+		t    = int((datetime.datetime.utcnow() - cls.DATE_BASE).total_seconds() * 1000)
 		base = t * (10 ** (nodes + rand))
 		n    = cls.NODE_ID * (10 ** rand)
 		r    = random.randint(0,(10**rand)-1)
@@ -302,11 +302,11 @@ class MapType(object):
 		self.kwargs = kwargs
 
 	def __str__( self ):
-		return "{%s}" % (",".join(map(lambda _:"%s=%s" % _, self.kwargs.items())))
+		return "{%s}" % (",".join(["%s=%s" % _ for _ in list(self.kwargs.items())]))
 
 	def __call__(self, **kwargs ):
 		res = {}
-		for key, value in kwargs.items():
+		for key, value in list(kwargs.items()):
 			assert key in self.kwargs, "Key not part of type: %s not in %s" % (key, self)
 			# TODO: Should also validate type
 			res[key] = value
@@ -352,7 +352,7 @@ class Types(object):
 
 	@staticmethod
 	def ENUM(*args):
-		return "(%s)" % ("|".join(map(lambda _:"%s" % _, args)))
+		return "(%s)" % ("|".join(["%s" % _ for _ in args]))
 
 	@staticmethod
 	def REFERENCE(clss):
@@ -360,14 +360,14 @@ class Types(object):
 
 	@classmethod
 	def AsString( cls, value ):
-		if isinstance(value, str) or isinstance(value, unicode):
+		if isinstance(value, str) or isinstance(value, str):
 			return value
 		else:
-			return unicode(value)
+			return str(value)
 
 	@classmethod
 	def AsBoolean( cls, value ):
-		if isinstance(value, str) or isinstance(value, unicode) and value.lower() == "false":
+		if isinstance(value, str) or isinstance(value, str) and value.lower() == "false":
 			return False
 		return value and True or False
 
@@ -779,7 +779,7 @@ class MemoryBackend(Backend):
 
 	def has( self, key ):
 		key = self._serialize(key)
-		return self.values.has_key(key)
+		return key in self.values
 
 	def get( self, key ):
 		key = self._serialize(key)
@@ -787,14 +787,14 @@ class MemoryBackend(Backend):
 
 	def list( self, key=None ):
 		assert key is None, "Not implemented"
-		return self.values.values()
+		return list(self.values.values())
 
 	def count( self, key=None ):
 		assert key is None, "Not implemented"
 		return len(self.values)
 
 	def keys( self, collection=None, order=Backend.ORDER_NONE ):
-		keys = self.values.keys()
+		keys = list(self.values.keys())
 		if   order == Backend.ORDER_ASCENDING:  keys = sorted(keys)
 		elif order == Backend.ORDER_DESCENDING: keys = sorted(keys, reverse=True)
 		for key in keys:
@@ -821,7 +821,7 @@ class DBMBackend(Backend):
 		# FIMXE: We should get away from the DBM backend as it seems to have
 		# numerous problems -- I got a lot of "cannot write..". Maybe I'm
 		# using it wrong?
-		import dbm
+		import dbm.ndbm
 		self._dbm     = dbm
 		self.path     = path
 		self.autoSync = autoSync
@@ -873,7 +873,7 @@ class DBMBackend(Backend):
 
 	def has( self, key ):
 		key = self._serialize(key=key)
-		return self.values.has_key(key)
+		return key in self.values
 
 	def get( self, key ):
 		key  = self._serialize(key=key)
@@ -882,7 +882,7 @@ class DBMBackend(Backend):
 		else: return self._deserialize(data=data)
 
 	def keys( self, collection=None, order=Backend.ORDER_NONE ):
-		keys = self.values.keys()
+		keys = list(self.values.keys())
 		if   order == Backend.ORDER_ASCENDING:  keys = sorted(keys)
 		elif order == Backend.ORDER_DESCENDING: keys = sorted(keys, reverse=True)
 		for key in keys:
@@ -890,14 +890,14 @@ class DBMBackend(Backend):
 
 	def clear( self ):
 		# TODO: Not very optimized
-		for k in self.keys():
+		for k in list(self.keys()):
 			self.remove(k)
 		self.close()
 		self._open()
 
 	def list( self, key=None ):
 		assert key is None, "Not implemented"
-		for data in self.values.values():
+		for data in list(self.values.values()):
 			yield self._deserialize(data=data)
 
 	def count( self, key=None ):
@@ -955,7 +955,7 @@ class DirectoryBackend(Backend):
 			for k in sorted(self.keys(prefix), reverse=order==Backend.ORDER_DESCENDING):
 				yield k
 		else:
-			assert not prefix or type(prefix) in (str,unicode) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
+			assert not prefix or type(prefix) in (str,str) or len(prefix) == 1, "Multiple prefixes not supported yet: {0}".format(prefix)
 			if prefix and type(prefix) in (tuple, list): prefix = prefix[0]
 			ext_len = len(self.DATA_EXTENSION)
 			if not prefix:

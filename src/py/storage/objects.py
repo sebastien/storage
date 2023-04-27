@@ -97,7 +97,7 @@ class StoredObject(Storable):
 	def Recognizes( self, data ):
 		if type(data) == (dict):
 			for key in self.PROPERTIES:
-				if not data.has_key(key):
+				if key not in data:
 					return False
 			return True
 		else:
@@ -301,7 +301,7 @@ class StoredObject(Storable):
 	def set( self, propertiesAndRelations, skipExtraProperties=None, timestamp=None ):
 		if skipExtraProperties is None: skipExtraProperties = self.SKIP_EXTRA_PROPERTIES
 		if propertiesAndRelations:
-			for name, value in propertiesAndRelations.items():
+			for name, value in list(propertiesAndRelations.items()):
 				if name in self.PROPERTIES:
 					self.setProperty(name, value, timestamp)
 				elif name in self.RELATIONS:
@@ -326,7 +326,7 @@ class StoredObject(Storable):
 		"""Sets a property of the given object. The property must match the
 		properties defined in `PROPERTIES`"""
 		# TODO: Check type
-		assert name in self.PROPERTIES, "Property `%s` not one of: %s" % (name, self.PROPERTIES.keys() + self.RELATIONS.keys())
+		assert name in self.PROPERTIES, "Property `%s` not one of: %s" % (name, list(self.PROPERTIES.keys()) + list(self.RELATIONS.keys()))
 		if not self._isNew:
 			old_value = self.getProperty(name)
 		new_value = self.ensureProperty(name).set(value)
@@ -340,7 +340,7 @@ class StoredObject(Storable):
 		"""Sets a relation of the given object. The value must match the
 		definition in `RELATIONS`"""
 		# TODO: Check type
-		assert name in self.RELATIONS, "Relation `%s` not one of: %s" % (name, self.PROPERTIES.keys() + self.RELATIONS.keys())
+		assert name in self.RELATIONS, "Relation `%s` not one of: %s" % (name, list(self.PROPERTIES.keys()) + list(self.RELATIONS.keys()))
 		if not name in self._relations: self._relations[name] = Relation(self.__class__, self.RELATIONS[name])
 		self._relations[name].set(value)
 		if not self._isNew:
@@ -360,14 +360,14 @@ class StoredObject(Storable):
 
 	def getProperty( self, name ):
 		"""Returns the property value bound to the given name"""
-		if  self.__class__.PROPERTIES.has_key(name):
+		if  name in self.__class__.PROPERTIES:
 			return self.ensureProperty(name).get()
 		else:
 			raise Exception("Property %s.%s is not declared in PROPERTIES" % (self.__class__.__name__, name))
 
 	def getRelation( self, name ):
 		"""Returns the given relation object"""
-		if self.__class__.RELATIONS.has_key(name):
+		if name in self.__class__.RELATIONS:
 			if not name in self._relations: self._relations[name] = Relation(self, self.RELATIONS[name])
 			return self._relations[name]
 		else:
@@ -436,7 +436,7 @@ class StoredObject(Storable):
 		d = self.__dict__
 		s = d.copy()
 		s = self.onStore(s)
-		for k,v in d.items():
+		for k,v in list(d.items()):
 			pass
 			# FIXME: We should have a more generic mechanism
 			# if isinstance(v, Event) or isinstance(v, ObjectStorage):
@@ -450,7 +450,7 @@ class StoredObject(Storable):
 		self.__dict__.update(state)
 		self.__dict__["storage"] = self.STORAGE
 		# FIXME: Should not be direct like that
-		assert not self.STORAGE._cache.has_key(self.getStorageKey()), "StoredObject already in cache: %s:%s" % (self.oid, self)
+		assert self.getStorageKey() not in self.STORAGE._cache, "StoredObject already in cache: %s:%s" % (self.oid, self)
 		self.onRestore()
 		#print "[DEBUG] Setting state for", self.oid, "|", self.__class__.__name__,  "|",  self
 
@@ -629,7 +629,7 @@ class Relation(object):
 		relation_class = self.getRelationClass()
 		self.clear()
 		if type(values) not in (list,tuple): values = (values,)
-		map(self.add, values)
+		list(map(self.add, values))
 		return self
 
 	# FIXME: Should have better access methods to return one or many
@@ -673,13 +673,13 @@ class Relation(object):
 
 	def one( self, index=0 ):
 		try:
-			return self.get(resolve=True, start=index).next()
+			return next(self.get(resolve=True, start=index))
 		except StopIteration as e:
 			return None
 
 	def isEmpty( self ):
 		try:
-			self.get(resolve=False).next()
+			next(self.get(resolve=False))
 			return False
 		except StopIteration as e:
 			return True
@@ -836,7 +836,7 @@ class ObjectStorage:
 			# We make sure to always release the lock here
 			self.lock.release()
 			exception_format = repr(traceback.format_exc()).split("\\n")
-			error_msg = u"\n|".join(exception_format[:-1])
+			error_msg = "\n|".join(exception_format[:-1])
 			raise Exception(error_msg)
 		# We update the indexes
 		if hasattr(storedObject, "INDEXES"):
@@ -872,7 +872,7 @@ class ObjectStorage:
 	def _get( self, key):
 		result = None
 		# We look in the cache first
-		if self._cache.has_key(key):
+		if key in self._cache:
 			result = self._cache[key]
 			return result
 		# Or we get it directly from shove
@@ -899,7 +899,7 @@ class ObjectStorage:
 		# We have to hit the cache first, as Shove has a cache that will remove
 		# instances after some time, we might end up with two objects for the
 		# same key if we don't hit the cache first
-		if self._cache.has_key(key):
+		if key in self._cache:
 			return True
 		elif self.backend.has(key):
 			return True
@@ -939,16 +939,16 @@ class ObjectStorage:
 
 	def isCached( self, key ):
 		"""Tells if the given key is found in cache."""
-		return self._cache.has_key(key)
+		return key in self._cache
 
 	def uncache( self, key ):
 		"""Uncaches the given key. If it is a stored object, it will be saved
 		before being uncached."""
-		if self._cache.has_key(key):
+		if key in self._cache:
 			v = self._cache[key]
 			if isinstance(v, StoredObject):
 				v.save()
-		if self._cache.has_key(key):
+		if key in self._cache:
 			del self._cache[key]
 
 	def remove( self, key ):
@@ -958,7 +958,7 @@ class ObjectStorage:
 			key       = old_value.getStorageKey()
 		else:
 			old_value = self.get(key)
-		if self._cache.has_key(key):
+		if key in self._cache:
 			del self._cache[key]
 		# We update the indexes
 		if hasattr(old_value, "INDEXES"):
@@ -973,8 +973,8 @@ class ObjectStorage:
 		"""Synchronizes the modifications with the backend."""
 		# We store the cached objects in the db, prefetching the keys as the
 		# dictionary may change during iteration
-		keys = self._cache.keys()
-		for key, storedObject in self._syncQueue.items():
+		keys = list(self._cache.keys())
+		for key, storedObject in list(self._syncQueue.items()):
 			v = storedObject
 			if v:
 				self.backend.update(key, v.export())
@@ -991,7 +991,7 @@ class ObjectStorage:
 		return self
 
 	def release( self ):
-		for k,c in self._declaredClasses.items():
+		for k,c in list(self._declaredClasses.items()):
 			c.STORAGE = None
 		self._declaredClasses = {}
 
@@ -1010,7 +1010,7 @@ class ObjectStorage:
 		in development mode as it could bring down your machine as it will
 		load all the objects and export them."""
 		res = {}
-		for key in self.keys():
+		for key in list(self.keys()):
 			res[key] = self.get(key)
 		return res
 

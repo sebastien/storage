@@ -19,7 +19,7 @@ class Inotify(object):
 	def __init__(self):
 		self.fd = libc.inotify_init()
 		if self.fd == -1:
-			print 'inotify INIT err :', geterr()
+			print('inotify INIT err :', geterr())
 			raise OSError()
 	def read(self):
 		size_int = c_int()
@@ -39,11 +39,11 @@ class Inotify(object):
 			yield wd, mask, cookie, name
 	def add_watch(self, path, mask):
 		wd = libc.inotify_add_watch(self.fd, path, mask)
-		if wd == -1: print 'inotify ADD err :', geterr()
+		if wd == -1: print('inotify ADD err :', geterr())
 		return wd
 	def rm_watch(self, wd):
 		ret = libc.inotify_rm_watch(self.fd, wd)
-		if ret == -1: print 'inotify RM err :', geterr()
+		if ret == -1: print('inotify RM err :', geterr())
 	def close(self):
 		close(self.fd)
 
@@ -71,5 +71,5 @@ FLAGS = {
 }
 
 def mask_str(mask):
-	return ' | '.join(name for name, val in FLAGS.items() if val & mask)
+	return ' | '.join(name for name, val in list(FLAGS.items()) if val & mask)
 

@@ -11,8 +11,8 @@
 from   storage import Storable, getCanonicalName, getTimestamp
 import re, unicodedata
 
-RE_SPACES     = re.compile(u"[\s\t\n]+")
-RE_NOALPHANUM = re.compile(u"[^A-Za-z0-9]+")
+RE_SPACES     = re.compile("[\s\t\n]+")
+RE_NOALPHANUM = re.compile("[^A-Za-z0-9]+")
 
 # -----------------------------------------------------------------------------
 #
@@ -33,12 +33,12 @@ class Indexing:
 	def Normalize( cls, value, object=None):
 		"""Converts the word to UTF-8, lowercase, stripped and with single spaces."""
 		if type(value) is str: value = value.decode("utf-8")
-		return RE_SPACES.sub(u" ", unicode(value or "").lower()).strip()
+		return RE_SPACES.sub(" ", str(value or "").lower()).strip()
 
 	# SEE: http://stackoverflow.com/questions/517923/what-is-the-best-way-to-remove-accents-in-a-python-unicode-string
 	@classmethod
 	def NoAccents( cls, value, object=None ):
-		value      = unicode(value) if type(value) is not unicode else value
+		value      = str(value) if type(value) is not str else value
 		nkfd_form  = unicodedata.normalize("NFKD", value)
 		return nkfd_form.encode("ASCII", "ignore")
 
@@ -53,7 +53,7 @@ class Indexing:
 		through `NoAccents`, then non-alphanumeric characters will be replaced
 		by spaces, and the result  will be normalized."""
 		value = cls.NoAccents(value)
-		value = RE_NOALPHANUM.sub(u" ", value)
+		value = RE_NOALPHANUM.sub(" ", value)
 		value = cls.Normalize(value)
 		return value
 
@@ -62,14 +62,14 @@ class Indexing:
 		"""Extracts keywords from the the given object. Returns them
 		noramlized and without accents."""
 		res = set()
-		if isinstance(values, dict): value = values.values()
+		if isinstance(values, dict): value = list(values.values())
 		if type(values) not in (tuple, list): values = (values,)
 		for value in values:
 			if not value: continue
 			# We might have i18n fields that are like {en:XXX,fr:XXX}
 			if isinstance(value, dict):
 				words = []
-				for _ in value.values(): words.extend(_.split(" "))
+				for _ in list(value.values()): words.extend(_.split(" "))
 			else:
 				words = value.split(" ")
 			for word in words:
@@ -84,7 +84,7 @@ class Indexing:
 		def indexer( cls, values, object=None ):
 			res   = []
 			scope = values
-			for name, extractor in properties.items():
+			for name, extractor in list(properties.items()):
 				v = getattr(scope, name)
 				v = extractor(v, scope)
 				if type(v) in (tuple, list):
@@ -123,7 +123,7 @@ class AttrDict(dict):
 		dict.__init__(self, init)
 
 	def __getstate__(self):
-		return self.__dict__.items()
+		return list(self.__dict__.items())
 
 	def __setstate__(self, items):
 		for key, val in items:
@@ -176,7 +176,7 @@ class Indexes:
 				continue
 			if not hasattr(c, "INDEX_BY"): continue
 			path = self.prefix + getCanonicalName(c)
-			for indexed_property, indexing_function in c.INDEX_BY.items():
+			for indexed_property, indexing_function in list(c.INDEX_BY.items()):
 				index_path = path + "." + indexed_property
 				# FIXME: Should provide a single backend for both forward and backward, no?
 				storage = IndexStorage(
@@ -342,7 +342,7 @@ class IndexStorage(object):
 			previous_keys = self.backwardBackend.get(sig)
 			for previous_key in previous_keys:
 				if self.forwardBackend.has(previous_key):
-					values       = filter(lambda _:_ != sig, self.forwardBackend.get(previous_key))
+					values       = [_ for _ in self.forwardBackend.get(previous_key) if _ != sig]
 					if not values:
 						self.forwardBackend.remove  (previous_key)
 					else:
@@ -399,7 +399,7 @@ class IndexStorage(object):
 				# NOTE: We've seen some cases where forward_mapping can be done
 				# this most likely happens when the extractor fails
 				forward_mapping = self.forwardBackend.get(previous_key)
-				values  = filter(lambda _:_ != sig, forward_mapping or ())
+				values  = [_ for _ in forward_mapping or () if _ != sig]
 				if not values:
 					if forward_mapping != None:
 						self.forwardBackend.remove(previous_key)

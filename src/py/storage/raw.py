@@ -72,7 +72,7 @@ class StoredRaw(Storable):
 			data  = meta.get("data") if data is None else None
 			if "data" in meta:
 				data = base64.b64decode(data)
-				meta = dict(((k,v) for k,v in meta.items() if k!="data"))
+				meta = dict(((k,v) for k,v in list(meta.items()) if k!="data"))
 			# If there is an object ID (and we're supposed to get it)
 			if oid:
 				# We look in the storage for this specific object
@@ -84,7 +84,7 @@ class StoredRaw(Storable):
 					# only update the properties if the object does not exist in the
 					# storage. If it does, then we assume the storage's version is the
 					# most up to date.if updateProperties:
-					for key, value in meta.items():
+					for key, value in list(meta.items()):
 						# NOTE: We manage reserved properites at this level
 						if key == "type" or key == "oid":
 							continue
@@ -150,7 +150,7 @@ class StoredRaw(Storable):
 		return cls.COLLECTION
 
 	def __init__( self, data=None, restored=False, **meta ):
-		if meta.has_key("oid"): self.oid = meta["oid"]
+		if "oid" in meta: self.oid = meta["oid"]
 		else: self.oid       = StoredRaw.GenerateOID()
 		self._meta           = {}
 		self._hasDataChanged = True
@@ -342,7 +342,7 @@ class RawStorage:
 		return self
 
 	def release( self ):
-		for k,c in self._declaredClasses.items():
+		for k,c in list(self._declaredClasses.items()):
 			c.STORAGE = None
 		self._declaredClasses = {}
 
@@ -401,7 +401,7 @@ class RawStorage:
 				res = raw_class(
 					data,
 					restored=True,
-					**dict(((k,v) for k,v in meta.items() if k != "data"))
+					**dict(((k,v) for k,v in list(meta.items()) if k != "data"))
 				)
 			if isinstance(res, StoredRaw): res.setStorage(self)
 		return res

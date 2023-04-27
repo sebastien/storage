@@ -1,24 +1,24 @@
 # FFCTN Python Makefile
 # -- Version: 2013-06-17
-# -- License: BSD License 
+# -- License: BSD License
 # -- (c) FFunction inc www.ffctn.com
 
 PROJECT         = storage
 PROJECT_VERSION = $(shell grep __version__ $(SOURCE_FILES) | head -n1 | cut -d'"' -f2)
-DOCUMENTATION   = Documentation
-SOURCES         = Sources
-LIBRARY         = Library
-TESTS           = Tests
-SCRIPTS         = 
+DOCUMENTATION   = doc
+SOURCES         = src/py
+LIBRARY         = lib
+TESTS           = tests
+SCRIPTS         =
 RESOURCES       =
-DIST            = Distribution
+DIST            = dist
 API             = $(PROJECT)-api.html
 PACKAGE         = $(PROJECT)
 MODULES         = $(shell find $(SOURCES)/$(PACKAGE) -name "*.py" | cut -d "." -f1 | sed "s|^$(SOURCES)/||g;s|\/|\.|g;s|\.__init__||g" )
 SOURCE_FILES    = $(shell find $(SOURCES) -name "*.py")
 TEST_FILES      = $(shell find $(TESTS) -name "*.py")
 DIST_CONTENT    = $(DOCUMENTATION) $(SOURCES) $(SCRIPTS) $(TESTS) $(RESOURCES) Makefile README setup.py
-CHECK_BLACKLIST = 
+CHECK_BLACKLIST =
 PYTHON          = PYTHONPATH=$(SOURCES) $(shell which python)
 PYTHONHOME      = $(shell $(PYTHON) -c "import sys;print filter(lambda x:x[-13:]=='site-packages',sys.path)[0]")
 SDOC            = $(shell which sdoc)
@@ -103,24 +103,6 @@ dist:
 
 man: README
 	$(TEXTO) -m -iutf8-1 README README.html
-
-doc: man
-	@echo "Generating $(PROJECT) documentation"
-ifeq ($(shell basename spam/$(SDOC)),sdoc)
-	@$(SDOC) -mtexto -cp$(SOURCES) $(MODULES) $(API)
-else
-	@echo "Sdoc is required to generate $(PROJECT) documentation."
-	@echo "Please see <http://www.ivy.fr/sdoc>"
-endif
-
-tags:
-	@echo "Generating $(PROJECT) tags"
-ifeq ($(shell basename spam/$(CTAGS)),ctags)
-	@$(CTAGS) -R
-else
-	@echo "Ctags is required to generate $(PROJECT) tags."
-	@echo "Please see <http://ctags.sf.net>"
-endif
 
 release:
 	python setup.py sdist
