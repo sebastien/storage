@@ -1,9 +1,11 @@
+from .utils import numcode
 from typing import ClassVar, Any
 from uuid import uuid4
 from datetime import datetime
 from calendar import timegm
 from random import randint
 from enum import Enum
+import time
 import os
 import sys
 import json
@@ -11,11 +13,11 @@ import json
 NOTHING = object()
 
 
-def asJSON(value:Any) -> str:
+def asJSON(value: Any) -> str:
     return json.dumps(value)
 
 
-def asPrimitive(value:Any, **options):
+def asPrimitive(value: Any, **options):
     options.setdefault("depth", 1)
     if value in (None, True, False):
         return value
@@ -244,6 +246,16 @@ class Identifier:
         n = cls.NODE_ID * (10**rand)
         r = randint(0, (10**rand) - 1)
         return base + n + r
+
+    @classmethod
+    def OID(cls, node: int = 0) -> str:
+        """Creates an id that contains a timestamp, a node id and some random
+        factor, that should make the jobs ids largely sortable"""
+        t: str = numcode(time.clock_gettime_ns(time.CLOCK_TAI)).rjust(14, "0")[:14]
+        n: str = numcode(node).rjust(4, "0")[:4]
+        # NOTE: math.log(math.pow(2,3 * 8), 62) ~ 3
+        r = numcode(int.from_bytes(os.urandom(3))).rjust(4, "0")[:4]
+        return f"{t}-{n}-{r}"
 
     @classmethod
     def Timestamp(cls, rand=3, nodes=4):

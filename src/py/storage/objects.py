@@ -84,7 +84,7 @@ class StoredObject(Storable):
     a storage proxy that implements you specific strategy.
     """
 
-    OID_GENERATOR: ClassVar[Callable[[], int]] = Identifier.Stamp
+    OID_GENERATOR: ClassVar[Callable[[], int]] = Identifier.OID
     SKIP_EXTRA_PROPERTIES: ClassVar[bool] = False
     COLLECTION = None
     STORAGE: ClassVar[Optional["ObjectStorage"]] = None
@@ -341,6 +341,10 @@ class StoredObject(Storable):
         assert self.getStorageKey(), "Object must have a key once created"
         self.init()
 
+    @property
+    def typeName(self) -> str:
+        return getCanonicalName(self.__class__)
+
     def init(self):
         """Can be overriden to do post-creation/import processing"""
         pass
@@ -366,9 +370,8 @@ class StoredObject(Storable):
                 elif skipExtraProperties:
                     pass
                 else:
-                    raise Exception(
-                        "Extra property given to %s: %s=%s"
-                        % (self.__class__.__name__, name, value)
+                    raise ValueError(
+                        f"Extra property '{name}' given to {self.__class__.__name__}: {name}={value}"
                     )
         return self
 
@@ -730,26 +733,26 @@ class Relation:
     def append(self, value):
         if not value:
             return self
-        value = restore(value)
-        assert type(value) in (
-            dict,
-            object,
-            getattr(value, "__class__"),
-        ), "Relation only accepts object or exported object, got: %s" % (value)
-        assert isinstance(value, self.getRelationClass()) or value.get(
-            "type"
-        ) == getCanonicalName(
-            self.getRelationClass()
-        ), "Relation expects value of type %s, got: %s" % (
-            self.getRelationClass(),
-            value,
-        )
+        if not (isinstance(value, dict) or isinstance(value, StoredObject)):
+            raise ValueError(
+                f"Relation only accepts object or exported object, got {type(value)}: {value}"
+            )
+        restored: StoredObject = restore(value)
+        if not isinstance(
+            restored, self.getRelationClass()
+        ) or restored.typeName != getCanonicalName(self.getRelationClass()):
+            raise ValueError(
+                f"Relation expects value of type {self.getRelationClass()}, got {type(restored)}: {restored}"
+            )
+        # We create values if empty
         if self.values is None:
             self.values = []
-        self.values.append(value)
-        assert (
-            len(self.values) <= 1 or self.isMany()
-        ), "Too many elements in relation single relation %s: %s" % (self, self.values)
+        if not self.isMany() and len(self.values):
+            raise RuntimeError(
+                f"Cannot append to a single value relation, relation has {len(self.values)} values: {restored}"
+            )
+        else:
+            self.values.append(restored)
         return self
 
     def remove(self, value):
@@ -880,9 +883,7 @@ class Relation:
         ):
             raise IndexError(f"Relations can only be queried by index, got: {key}")
         elif key < 0:
-            raise IndexError(
-                f"Relations can only be accessed by positive numbers, got: {key}"
-            )
+            key = max(0, len(self) + key)
         for _ in self.get():
             if key == 0:
                 return _
