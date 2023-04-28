@@ -1,5 +1,9 @@
 import time, threading, json, weakref, types, datetime, traceback
-from . import (
+from typing import ClassVar, Self, Callable, Optional, Iterator, Any, List
+from .backends import StorageBackend
+from .index import Index
+from .utils import atomic, TPrimitive
+from .core import (
     Storable,
     Identifier,
     getCanonicalName,
@@ -9,8 +13,6 @@ from . import (
     isSame,
     getTimestamp,
 )
-
-__pychecker__ = "unusednames=options"
 
 # TODO: Do some garbage-collection in the cache or use weak-references
 
@@ -82,20 +84,20 @@ class StoredObject(Storable):
     a storage proxy that implements you specific strategy.
     """
 
-    OID_GENERATOR = Identifier.Stamp
-    SKIP_EXTRA_PROPERTIES = False
+    OID_GENERATOR: ClassVar[Callable[[], int]] = Identifier.Stamp
+    SKIP_EXTRA_PROPERTIES: ClassVar[bool] = False
     COLLECTION = None
-    STORAGE = None
-    PROPERTIES = {}
-    COMPUTED_PROPERTIES = ()
+    STORAGE: ClassVar[Optional["ObjectStorage"]] = None
+    PROPERTIES: ClassVar[dict[str, Any]] = {}
+    COMPUTED_PROPERTIES: ClassVar[list[str]] = []
     RELATIONS = {}
-    RESERVED = ("type", "oid", "updates")
-    INDEXES = None
+    RESERVED: ClassVar[list[str]] = ["type", "oid", "updates"]
+    INDEXES: ClassVar[list[Index]] = []
 
     @classmethod
-    def Recognizes(self, data):
-        if type(data) == (dict):
-            for key in self.PROPERTIES:
+    def Recognizes(cls, data: Any) -> bool:
+        if isinstance(data, dict):
+            for key in cls.PROPERTIES:
                 if key not in data:
                     return False
             return True
@@ -103,9 +105,7 @@ class StoredObject(Storable):
             return False
 
     @classmethod
-    def AddIndex(cls, index):
-        if cls.INDEXES is None:
-            cls.INDEXES = []
+    def AddIndex(cls, index: Index):
         if index not in cls.INDEXES:
             cls.INDEXES.append(index)
         return cls
@@ -124,62 +124,66 @@ class StoredObject(Storable):
         return cls.OID_GENERATOR()
 
     @classmethod
-    def StoragePrefix(cls):
-        return self._getStoragePrefix(cls)[0]
-
-    @classmethod
-    def All(cls, since=None):
+    def All(cls, since=None) -> Iterator["StoredObject"]:
         """Iterates on all the objects of this type in the storage."""
-        assert (
-            cls.STORAGE
-        ), "Class has not been registerd in an ObjectStorage yet: %s" % (cls)
+        if not cls.STORAGE:
+            raise RuntimeError(
+                f"Class has not been registered in an ObjectStorage yet: {cls}"
+            )
         for storage_id in cls.Keys():
             obj = cls.STORAGE.get(storage_id)
-            if since is None or since < obj.getUpdateTime():
+            if obj and (since is None or since < obj.getUpdateTime()):
                 yield obj
 
     @classmethod
-    def Keys(cls, prefix=None):
+    def Keys(cls, prefix=None) -> Iterator[str]:
         """List all the keys for objects of this type in the storage."""
-        assert (
-            cls.STORAGE
-        ), "Class has not been registerd in an ObjectStorage yet: %s" % (cls)
+        if not cls.STORAGE:
+            raise RuntimeError(
+                f"Class has not been registered in an ObjectStorage yet: {cls}"
+            )
         return cls.STORAGE.keys(cls, prefix=prefix)
 
     # NOTE: We should return Non when the object does not exist, and provide
     # an Ensure method that will create the object if necessary.
     @classmethod
-    def Get(cls, oid=None, key=None):
+    def Get(
+        cls, oid: Optional[str] = None, key: Optional[str] = None
+    ) -> Optional["StoredObject"]:
         """Returns the instance associated with the given Object ID, if any"""
-        assert (
-            cls.STORAGE
-        ), "Class has not been registered in an ObjectStorage yet: %s" % (cls)
+        if not cls.STORAGE:
+            raise RuntimeError(
+                f"Class has not been registered in an ObjectStorage yet: {cls}"
+            )
         if oid is None and key is None:
             return None
         return cls.STORAGE.get(cls.StorageKey(oid) if key is None else key)
 
     @classmethod
-    def Count(cls):
+    def Count(cls) -> int:
         """Returns the count of objects of this type stored in the storage."""
-        assert (
-            cls.STORAGE
-        ), "Class has not been registered in an ObjectStorage yet: %s" % (cls)
+        if not cls.STORAGE:
+            raise RuntimeError(
+                f"Class has not been registered in an ObjectStorage yet: {cls}"
+            )
         return cls.STORAGE.count(cls)
 
     @classmethod
-    def List(cls, count=-1, start=0, end=None):
+    def List(cls, count: int = -1, start: int = 0, end: Optional[int] = None):
         """Returns the list of objects of this type stored in the storage."""
-        assert (
-            cls.STORAGE
-        ), "Class has not been registerd in an ObjectStorage yet: %s" % (cls)
+        if not cls.STORAGE:
+            raise RuntimeError(
+                f"Class has not been registered in an ObjectStorage yet: {cls}"
+            )
         return cls.STORAGE.list(cls, count, start, end)
 
     @classmethod
-    def Has(cls, oid):
+    def Has(cls, oid: str) -> bool:
         """Tells if there is an object stored with the given object id."""
-        assert (
-            cls.STORAGE
-        ), "Class has not been registerd in an ObjectStorage yet: %s" % (cls)
+        if not cls.STORAGE:
+            raise RuntimeError(
+                f"Class has not been registered in an ObjectStorage yet: {cls}"
+            )
         return cls.STORAGE.has(cls.StorageKey(oid))
 
     @classmethod
@@ -302,7 +306,7 @@ class StoredObject(Storable):
         properties=None,
         restored=False,
         skipExtraProperties=None,
-        **kwargs
+        **kwargs,
     ):
         """Creates a new stored object instance with the given oid. If none is given, then a new oid will be generated."""  # If the oid is not directly given, it might be listed in the properties
         if skipExtraProperties is None:
@@ -667,7 +671,7 @@ class Property(object):
                     value = old_value
         return self.value
 
-    def export(self, **options):
+    def export(self, **options) -> TPrimitive:
         if "depth" not in options:
             options["depth"] = 0
         return asPrimitive(self.value, **options)
@@ -683,7 +687,7 @@ class Property(object):
 # -----------------------------------------------------------------------------
 
 
-class Relation(object):
+class Relation:
     """Represents a relation between one object and another. This is a one-to-many
     relationship that can be lazily loaded."""
 
@@ -707,7 +711,7 @@ class Relation(object):
         value = restore(value)
         assert type(value) in (
             dict,
-            types.InstanceType,
+            object,
             getattr(value, "__class__"),
         ), "Relation only accepts object or exported object, got: %s" % (value)
         assert isinstance(value, self.getRelationClass()) or value.get(
@@ -790,18 +794,18 @@ class Relation(object):
         except StopIteration as e:
             return None
 
-    def isEmpty(self):
+    def isEmpty(self) -> bool:
         try:
             next(self.get(resolve=False))
             return False
         except StopIteration as e:
             return True
 
-    def contains(self, objectOrID):
+    def contains(self, objectOrID: StoredObject | str) -> bool:
         """Alias for has"""
         return self.has(objectOrID)
 
-    def has(self, objectOrID):
+    def has(self, objectOrID: StoredObject | str) -> bool:
         oid = objectOrID.oid if isinstance(objectOrID, StoredObject) else objectOrID
         for v in self.get(resolve=False):
             if isinstance(v, dict) and "oid" in v and "type" in v and v["oid"] == oid:
@@ -812,11 +816,11 @@ class Relation(object):
         return self.get(resolve=True)
 
     def all(self):
-        # FIXME: This does not work!
-        return tuple(self.list())
+        """Alias for `list()`"""
+        return self.list()
 
-    def isMany(self):
-        return type(self.definition) in (tuple, list)
+    def isMany(self) -> bool:
+        return isinstance(self.definition, tuple) or isinstance(self.definition, list)
 
     def getRelationClass(self):
         if self.isMany():
@@ -824,7 +828,7 @@ class Relation(object):
         else:
             return self.definition
 
-    def export(self, **options):
+    def export(self, **options) -> List[TPrimitive]:
         o = {}
         o.update(options)
         # FIXME: For serialization we want relations to be shallow (oid/type)
@@ -838,7 +842,7 @@ class Relation(object):
             asPrimitive(_, **o) for _ in self.get(resolve=options.get("resolve", True))
         ]
 
-    def __len__(self):
+    def __len__(self) -> int:
         if self.values:
             return len(self.values)
         else:
@@ -848,18 +852,21 @@ class Relation(object):
         return self.get(*args, **kwargs)
 
     def __getitem__(self, key):
-        assert type(key) in (
+        if type(key) not in (
             int,
             float,
-        ), "Relations can only be queried by index, got: %s" % (key)
-        assert (
-            key >= 0
-        ), "Relations can only be accessed by positive numbers, got: %s" % (key)
+        ):
+            raise IndexError(f"Relations can only be queried by index, got: {key}")
+        elif key < 0:
+            raise IndexError(
+                f"Relations can only be accessed by positive numbers, got: {key}"
+            )
         for _ in self.get():
             if key == 0:
                 return _
             else:
                 key -= 1
+        return None
 
     def __iter__(self):
         return self.get(resolve=True)
@@ -878,8 +885,7 @@ class Relation(object):
 #
 # -----------------------------------------------------------------------------
 
-# TODO: Cache should use weak references, and only cache objects which can be
-# turned to weak references (otherwise Shove's cache will be sufficient)
+
 class ObjectStorage:
     """A simple encapsulation of a key-value database that makes sure that
     you'll always get the same physical object for the given key -- at least
@@ -894,7 +900,7 @@ class ObjectStorage:
     too many objects in memory when memory becomes scarce.
     """
 
-    def __init__(self, backend):
+    def __init__(self, backend: StorageBackend):
         self.backend = backend
         self.lock = threading.RLock()
         # FIXME: This is wrong, we should make sure the object is persisted
@@ -904,12 +910,13 @@ class ObjectStorage:
         self._lastSync = 0
         self._declaredClasses = {}
 
-    def register(self, storedObject, restored=False):
+    def register(self, storedObject: StoredObject, restored: bool = False) -> Self:
         """Registers this new StoredObject in this storage. This allows a get()
         to be successful, even before the object is actually stored in the db."""
-        assert isinstance(
-            storedObject, StoredObject
-        ), "Only stored objects can be registered"
+        if not isinstance(storedObject, StoredObject):
+            raise ValueError(
+                f"Only stored objects can be registered, got {type(storedObject)}: {storedObject}"
+            )
         self.lock.acquire()
         # Here we don't need to check, as we're already sure it's a stored
         # object
@@ -921,7 +928,7 @@ class ObjectStorage:
         self.lock.release()
         return self
 
-    def _restore(self, exportedStoredObject):
+    def _restore(self, exportedStoredObject: dict[str, Any]) -> StoredObject:
         # NOTE: We call restore only when the object was not already in cache
         # NOTE: Exported stored object  is expected to be a dict as give
         # by StoredObject.export
@@ -945,8 +952,9 @@ class ObjectStorage:
         else:
             raise Exception("Class not registered in ObjectStorage: %s" % (oclass))
 
-    def add(self, storedObject, creation=False):
-        """Sets the given value to the given key, storing it in cache."""
+    def add(self, storedObject: StoredObject, creation: bool = False):
+        """Sets the given value to the given key, storing it in cache. Note that
+        this does not store all referenced objects."""
         self.lock.acquire()
         try:
             # if True:
@@ -959,7 +967,7 @@ class ObjectStorage:
             try:
                 self._cache[key] = storedObject
             except TypeError:
-                # NOTE: Not sure in which cae we would get a cache error.
+                # NOTE: Not sure in which cache we would get a cache error.
                 pass
             if isinstance(StoredObject, StoredObject):
                 storedObject.setStorage(self)
@@ -980,12 +988,12 @@ class ObjectStorage:
                 index.save()
         return storedObject
 
-    def create(self, storedObject):
+    def create(self, storedObject: StoredObject) -> StoredObject:
         """Alias for `add`, but checks that the object does not already exists"""
         # assert not self.has(key), "ObjectStorage already has object with key: '%s'" % (key)
         return self.add(storedObject, creation=True)
 
-    def update(self, storedObject):
+    def update(self, storedObject: StoredObject) -> StoredObject:
         """Alias for update, but checks that the object already exist"""
         # assert self.has(key), "ObjectStorage has no object with key: '%s'" % (key)
         return self.add(storedObject, creation=False)
@@ -994,14 +1002,8 @@ class ObjectStorage:
         """Returns the instance attached to the given key in the storage.
         We use an intermediate cache as shove's cache may delete instances
         whenever it find it necessary."""
-        self.lock.acquire()
-        if True:  # try:
-            res = self._get(key)
-            self.lock.release()
-            return res
-        # except Exception as e:
-        # 	self.lock.release()
-        # 	raise e
+        with atomic(self.lock):
+            return self._get(key)
 
     def _get(self, key):
         result = None
@@ -1158,4 +1160,4 @@ class ObjectStorage:
         return data
 
 
-# EOF - vim: tw=80 ts=4 sw=4 noet
+# EOF

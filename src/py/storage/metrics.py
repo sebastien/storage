@@ -1,5 +1,5 @@
 from . import (
-    Operations,
+    Operation,
     DirectoryBackend,
     getCanonicalName,
     getTimestamp,
@@ -136,7 +136,7 @@ class MetricStorage:
     def add(self, metric):
         """Adds the given metric to the storage."""
         metric = self._ensureMetric(metric)
-        self.backend.add(metric.getName(), self._export(metric, Operations.ADD))
+        self.backend.add(metric.getName(), self._export(metric, Operation.ADD))
 
     def get(self, name, after=None, before=None):
         """Gets the metric with the given name from the storage."""
@@ -152,12 +152,12 @@ class MetricStorage:
         """Removes the given metric to the storage. In most cases, the
         metric won't be actually removed, but just invalidated."""
         metric = self._ensureMetric(metric)
-        self.backend.remove(metric.getName(), self._export(metric, Operations.REMOVE))
+        self.backend.remove(metric.getName(), self._export(metric, Operation.REMOVE))
 
     def update(self, metric):
         """Updates the value for the given metric in the storage."""
         metric = self._ensureMetric(metric)
-        self.backend.update(metric.getName(), self._export(metric, Operations.UPDATE))
+        self.backend.update(metric.getName(), self._export(metric, Operation.UPDATE))
 
     def sync(self):
         """Explicitely ask the back-end to synchronize. Depending on the

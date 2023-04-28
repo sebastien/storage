@@ -1,8 +1,7 @@
 import types, json
-import retro.web
-from retro.core import str
 from storage import Storable, restore
 from storage.raw import StoredRaw
+import retro.web
 
 # FIXME: It seems that sometimes when one element is sent as a field value
 # (like shootingback.model.Clip.tags=["Youth"], only "Youth" is stored

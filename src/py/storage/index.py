@@ -1,4 +1,5 @@
-from . import Storable, getCanonicalName, getTimestamp
+from . import Storable
+from .core import getCanonicalName, getTimestamp
 import re, unicodedata
 
 RE_SPACES = re.compile(r"[\s\t\n]+")
@@ -237,7 +238,7 @@ class Indexes:
 # -----------------------------------------------------------------------------
 
 
-class Index(object):
+class Index:
 
     STORAGE = None
 
