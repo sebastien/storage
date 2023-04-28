@@ -1,7 +1,7 @@
 from . import StorageBackend
 from ..core import NOTHING, Operation
 from io import IOBase
-from typing import ClassVar, Iterator
+from typing import Iterator
 import os
 import shutil
 

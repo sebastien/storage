@@ -1,4 +1,4 @@
-import time, threading, json, weakref, types, datetime, traceback
+import time, threading, json, weakref, types, datetime, traceback, inspect
 from typing import ClassVar, Self, Callable, Optional, Iterator, Any, List
 from .backends import StorageBackend
 from .index import Index
@@ -343,6 +343,7 @@ class StoredObject(Storable):
 
     def init(self):
         """Can be overriden to do post-creation/import processing"""
+        pass
 
     def set(self, propertiesAndRelations, skipExtraProperties=None, timestamp=None):
         if skipExtraProperties is None:
@@ -378,13 +379,14 @@ class StoredObject(Storable):
         """Sets a property of the given object. The property must match the
         properties defined in `PROPERTIES`"""
         # TODO: Check type
-        assert name in self.PROPERTIES, "Property `%s` not one of: %s" % (
-            name,
-            list(self.PROPERTIES.keys()) + list(self.RELATIONS.keys()),
-        )
-        if not self._isNew:
-            old_value = self.getProperty(name)
-        new_value = self.ensureProperty(name).set(value)
+        if name not in self.PROPERTIES:
+            raise ValueError(
+                f"Property `{name}` not one of: {list(self.PROPERTIES.keys()) + list(self.RELATIONS.keys())}"
+            )
+        old_value = self.getProperty(name) if not self._isNew else None
+        if not (p := self.ensureProperty(name)):
+            raise ValueError(f"StoredObject does not define property {name}: {self}")
+        new_value = p.set(value)
         if not self._isNew and old_value != new_value:
             # We update the `updates` map only if the object is not new (has
             # been registered)
@@ -414,7 +416,7 @@ class StoredObject(Storable):
             )
         return self
 
-    def ensureProperty(self, name):
+    def ensureProperty(self, name) -> Optional["Property"]:
         """Returns the Property instance bound to the given name"""
         if name in self.__class__.PROPERTIES:
             if name not in self._properties:
@@ -423,32 +425,43 @@ class StoredObject(Storable):
         else:
             return None
 
-    def getProperty(self, name):
+    # TODO: This is actually the property value... should be renamed.
+    def getProperty(self, name: str):
         """Returns the property value bound to the given name"""
-        if name in self.__class__.PROPERTIES:
-            return self.ensureProperty(name).get()
+        if name in self.__class__.PROPERTIES and (p := self.ensureProperty(name)):
+            return p.get()
         else:
-            raise Exception(
-                "Property %s.%s is not declared in PROPERTIES"
-                % (self.__class__.__name__, name)
+            raise ValueError(
+                f"Property {self.__class__.__name__}.{name} is not declared in PROPERTIES"
             )
 
-    def getRelation(self, name):
+    def iterProperties(self) -> Iterator[tuple[str, Any]]:
+        yield from ((_, self.getProperty(_)) for _ in self.__class__.PROPERTIES)
+
+    def getRelation(self, name: str) -> "Relation":
         """Returns the given relation object"""
         if name in self.__class__.RELATIONS:
+            # We Lazily create the relation
             if not name in self._relations:
                 self._relations[name] = Relation(self, self.RELATIONS[name])
             return self._relations[name]
         else:
-            raise Exception(
-                "Property %s.%s is not declared in RELATIONS"
-                % (self.__class__.__name__, name)
+            raise ValueError(
+                f"Relation {self.__class__.__name__}.{name} is not declared in RELATIONS"
             )
 
-    def getID(self):
-        self.oid
+    def iterRelations(self) -> Iterator[tuple[str, "Relation"]]:
+        yield from ((_, self.getRelation(_)) for _ in self.__class__.RELATIONS)
 
-    def getUpdateTime(self, key="oid"):
+    def iterReferences(self) -> Iterator["StoredObject"]:
+        yield from (v for _, v in self.iterProperties() if isinstance(v, StoredObject))
+        for _, r in self.iterRelations():
+            yield from r
+
+    def getID(self) -> str:
+        return self.oid
+
+    def getUpdateTime(self, key="oid") -> int:
         """Returns the time at with the given object (or key) was updated. The time
         is returned as a storage timestamp."""
         if self._updates:
@@ -456,31 +469,39 @@ class StoredObject(Storable):
         else:
             return 0
 
-    def getStorageKey(self):
+    def getStorageKey(self) -> str:
         """Returns the key used to store this object in a storage."""
         return self.__class__.StorageKey(self.oid)
 
-    def setStorage(self, storage):
+    def setStorage(self, storage: "ObjectStorage") -> Self:
         """Sets the storage object associated with this object."""
         # NOTE: For now we just expect the storage not to change... but maybe
         # there is a case where we'd need multiple storages
-        assert self.storage is None or self.storage == storage
+        if self.storage and self.storage != storage:
+            raise RuntimeError(
+                f"StoredObject already has an assigned storage {self.storage}: {self}"
+            )
         self._isNew = False
         self.storage = storage
+        return self
 
-    def getCollection(self):
-        """Returns the collection for this stored object"""
+    def getCollection(self) -> str:
+        """Returns the collection name for this stored object"""
         return self.COLLECTION or self.__class__.__name__
 
-    def remove(self):
+    def remove(self) -> bool:
         """Removes the stored element from the storage."""
         # print "[DEBUG] Removing stored element", self.__class__.__name__, "|", self.oid, "|", self
-        assert self.storage, "StoredObject has no associated storage"
-        self.storage.remove(self)
+        if self.storage:
+            self.storage.remove(self)
+            return True
+        else:
+            return False
 
-    def save(self):
+    def save(self) -> Self:
         """Saves this object to the storage."""
-        assert self.storage, "StoredObject has no associated storage"
+        if not self.storage:
+            raise RuntimeError(f"StoredObject has no assigned storage: {self}")
         key = self.getStorageKey()
         if self.storage.has(key):
             self.storage.update(self)
@@ -488,8 +509,8 @@ class StoredObject(Storable):
             self.storage.create(self)
         return self
 
-    def onStore(self, d):
-        """Processes the dictionnary that will be stored as a value in the
+    def onStore(self, d: TPrimitive) -> TPrimitive:
+        """Processes the dictionary that will be stored as a value in the
         storage back-end. Override this to remove non-picklable values."""
         return d
 
@@ -501,24 +522,25 @@ class StoredObject(Storable):
 
     def onRemove(self):
         """Invoked after the element is removed from the cache"""
+        pass
 
-    def __getstate__(self):
+    def __getstate__(self) -> TPrimitive:
         """This strips the state of events, and object storage reference which
         cannot really be pickled."""
         d = self.__dict__
         s = d.copy()
         s = self.onStore(s)
-        for k, v in list(d.items()):
-            pass
-            # FIXME: We should have a more generic mechanism
-            # if isinstance(v, Event) or isinstance(v, ObjectStorage):
-            # 	del s[k]
+        # for k, v in list(d.items()):
+        #     pass
+        #     # FIXME: We should have a more generic mechanism
+        #     # if isinstance(v, Event) or isinstance(v, ObjectStorage):
+        #     # 	del s[k]
         return s
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: TPrimitive):
         """Sets the state of this object given a dictionary loaded from the
-        object storage. Override this to re-construct the object state
-        from what is returned by `__getstate__`"""
+        object storage. Override this to re-construct the object state from
+        what is returned by `__getstate__`"""
         self.__dict__.update(state)
         self.__dict__["storage"] = self.STORAGE
         # FIXME: Should not be direct like that
@@ -909,6 +931,8 @@ class ObjectStorage:
         self._syncQueue = weakref.WeakValueDictionary()
         self._lastSync = 0
         self._declaredClasses = {}
+        # Used to keep track of allocated objects
+        self.allocated: list[StoredObject] = []
 
     def register(self, storedObject: StoredObject, restored: bool = False) -> Self:
         """Registers this new StoredObject in this storage. This allows a get()
@@ -1158,6 +1182,21 @@ class ObjectStorage:
 
     def deserializeObjectExport(self, data):
         return data
+
+    def __enter__(self):
+        self.allocated = []
+        return self.allocated
+
+    def __exit__(self, type, value, traceback):
+        parent_locals = inspect.currentframe().f_back.f_locals
+        # Upon exit, we name any atom that we find in the scope
+        for k, v in (
+            (k, v) for k, v in parent_locals.items() if isinstance(v, StoredObject)
+        ):
+            if not v.storage:
+                v.setStorage(self)
+            self.allocated.append(v)
+        self.allocated = []
 
 
 # EOF
