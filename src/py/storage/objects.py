@@ -1196,6 +1196,7 @@ class ObjectStorage:
         ):
             if not v.storage:
                 v.setStorage(self)
+            v.save()
             self.allocated.append(v)
         self.allocated = []
 
