@@ -456,10 +456,18 @@ class StoredObject(Storable):
     def iterRelations(self) -> Iterator[tuple[str, "Relation"]]:
         yield from ((_, self.getRelation(_)) for _ in self.__class__.RELATIONS)
 
-    def iterReferences(self) -> Iterator["StoredObject"]:
-        yield from (v for _, v in self.iterProperties() if isinstance(v, StoredObject))
-        for _, r in self.iterRelations():
-            yield from r
+    def iterReferences(self, limit: int = -1) -> Iterator["StoredObject"]:
+        if limit != 0:
+            for o in (
+                v for _, v in self.iterProperties() if isinstance(v, StoredObject)
+            ):
+                yield o
+                yield from o.iterReferences(limit=limit - 1)
+            for _, r in self.iterRelations():
+                for o in r:
+                    if isinstance(o, StoredObject):
+                        yield o
+                        yield from o.iterReferences(limit=limit - 1)
 
     def getID(self) -> str:
         return self.oid
