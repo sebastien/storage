@@ -1,40 +1,53 @@
-from . import Backend
+from . import StorageBackend
+
+# FIMXE: We should get away from the DBM backend as it seems to have
+# numerous problems -- I got a lot of "cannot write..". Maybe I'm
+# using it wrong?
+import dbm.ndbm
+import time
+
+# FIXME: This implementation is a bit shit. The changes should be queued and
+# a worker should work on that queue.
 
 
-class DBMBackend(Backend):
+class DBMBackend(StorageBackend):
     """A really simple backend that wraps Python's DBM module. Key and value
     data are converted to JSON strings on the fly."""
 
     def __init__(self, path, autoSync=False):
-        Backend.__init__(self)
-        # FIMXE: We should get away from the DBM backend as it seems to have
-        # numerous problems -- I got a lot of "cannot write..". Maybe I'm
-        # using it wrong?
-        import dbm.ndbm
-
+        super().__init__()
         self._dbm = dbm
-        self.path = path
+        self.path = f"{path}.dbm"
         self.autoSync = autoSync
         self.values = None
         self._open()
 
-    def _open(self, mode="c"):
-        try:
-            self.values = self._dbm.open(self.path, "c")
-        except self._dbm.error as e:
-            raise Exception("Cannot open DBM at path {}:{}".format(self.path, e))
+    def _open(self, mode="a") -> True:
+        if self.values is None:
+            try:
+                self.values = self._dbm.open(self.path, "c")
+                return True
+            except self._dbm.error as e:
+                raise RuntimeError("Cannot open DBM at path {}:{}".format(self.path, e))
+        else:
+            return False
 
     def _tryAdd(self, key, data):
         # SEE: http://stackoverflow.com/questions/4995162/python-shelve-dbm-error/12167172#12167172
         # NOTE: I've encountered a lot of problems with DBM, it does not
         # seem to be very reliable for that kind of application
         retries = 5
+        if not self.values:
+            self._open()
+        if not self.values:
+            raise RuntimeError(f"Could not open DBM database at: {self.path}")
         if key:
             while True:
                 try:
                     self.values[key] = data
                     return True
                 except self._dbm.error as e:
+                    # FIXME: This is not cool, this should be done in a worker.
                     time.sleep(0.100 * retries)
                     if retries == 0:
                         raise Exception(
@@ -59,11 +72,9 @@ class DBMBackend(Backend):
         del self.values[key]
 
     def sync(self):
-        if not self.autoSync:
-            # On some DBM implementations, we might need to close the file
-            # to flush it... but this is not the default behaviour
-            self.values.close()
-            self._open()
+        # FIXME: Sync is an expensive operation, so it should really not be done on every operation.
+        # self.values.sync()
+        pass
 
     def has(self, key):
         key = self._serialize(key=key)
@@ -77,11 +88,11 @@ class DBMBackend(Backend):
         else:
             return self._deserialize(data=data)
 
-    def keys(self, collection=None, order=Backend.ORDER_NONE):
+    def keys(self, collection=None, order=StorageBackend.ORDER_NONE):
         keys = list(self.values.keys())
-        if order == Backend.ORDER_ASCENDING:
+        if order == StorageBackend.ORDER_ASCENDING:
             keys = sorted(keys)
-        elif order == Backend.ORDER_DESCENDING:
+        elif order == StorageBackend.ORDER_DESCENDING:
             keys = sorted(keys, reverse=True)
         for key in keys:
             yield self._deserialize(key=key)
@@ -98,12 +109,18 @@ class DBMBackend(Backend):
         for data in list(self.values.values()):
             yield self._deserialize(data=data)
 
-    def count(self, key=None):
+    def count(self, key=None) -> int:
         assert key is None, "Not implemented"
-        return len(self.values)
+        return len(self.values) if self.values else 0
 
-    def close(self):
-        self.values.close()
+    def close(self) -> bool:
+        if self.values:
+            self.sync()
+            self.values.close()
+            self.values = None
+            return True
+        else:
+            return False
 
     def __del__(self):
         self.close()

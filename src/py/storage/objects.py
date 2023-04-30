@@ -111,12 +111,17 @@ class StoredObject(Storable):
         return cls
 
     @classmethod
-    def RebuildIndexes(cls):
+    def RebuildIndexes(cls) -> tuple[int, int]:
+        indexes: int = 0
+        objects: int = 0
+        for i in cls.INDEXES:
+            indexes += 1
+            i.clear()
         for v in cls.All():
-            # FIXME: Does not work!
-            for i in index:
-                i.clear()
+            objects += 1
+            for i in cls.INDEXES:
                 i.add(v)
+        return (indexes, objects)
 
     @classmethod
     def GenerateOID(cls):
@@ -560,6 +565,22 @@ class StoredObject(Storable):
         ), "StoredObject already in cache: %s:%s" % (self.oid, self)
         self.onRestore()
         # print "[DEBUG] Setting state for", self.oid, "|", self.__class__.__name__,  "|",  self
+
+    def exportWith(self, *keys: str, depth: int = 1):
+        res: dict[str, TPrimitive] = {}
+        for key in keys:
+            if key == "oid":
+                res[key] = str(self.oid)
+            elif key == "type":
+                res[key] = self.getTypeName()
+            elif key in self.PROPERTIES:
+                value = self.getProperty(key)
+                if value is not None:
+                    res[key] = asPrimitive(value, depth=depth - 1)
+            elif key in self.RELATIONS:
+                relation = getattr(self, key)
+                res[key] = asPrimitive(relation, depth=depth - 1)
+        return res
 
     def export(self, **options):
         """Returns a dictionary representing this object. By default, it

@@ -1,4 +1,6 @@
 from . import Storable
+from typing import Optional, Type
+from .backends import StorageBackend
 from .core import getCanonicalName, getTimestamp
 import re, unicodedata
 
@@ -18,7 +20,7 @@ class Indexing:
 
     @classmethod
     def Value(cls, value, object=None):
-        """Transparent, jsut returns the value."""
+        """Transparent, just returns the value."""
         return value
 
     @classmethod
@@ -31,22 +33,23 @@ class Indexing:
     def NoAccents(cls, value, object=None):
         value = str(value) if type(value) is not str else value
         nkfd_form = unicodedata.normalize("NFKD", value)
-        return nkfd_form.encode("ASCII", "ignore")
+        return str(nkfd_form.encode("ASCII", "ignore"), "ascii")
 
     @classmethod
-    def UpdateTime(cls, value, object=None):
+    def UpdateTime(cls, value, object: Storable = None) -> Optional[int]:
         """Returns the update time of the given object"""
-        return object.getUpdateTime()
+        return object.getUpdateTime() if object else None
 
     @classmethod
-    def Keyword(cls, value, object=None):
+    def Keyword(cls, value, object=None) -> str:
         """Normalizes the given value as a keyword. It will be filtered
         through `NoAccents`, then non-alphanumeric characters will be replaced
         by spaces, and the result  will be normalized."""
-        value = cls.NoAccents(value)
-        value = RE_NOALPHANUM.sub(" ", value)
-        value = cls.Normalize(value)
-        return value
+        text = str(value, "utf8") if not isinstance(value, str) else value
+        text = cls.NoAccents(text)
+        text = RE_NOALPHANUM.sub(" ", text)
+        text = cls.Normalize(text)
+        return text
 
     @classmethod
     def Keywords(cls, values, object=None, minLength=3):
@@ -157,16 +160,16 @@ class Indexes:
     """Manages a collection of indexes."""
 
     # TODO: Document shortcut usage
-    def __init__(self, backend, prefix=""):
-        self.backendClass = backend
+    def __init__(self, backendClass: Type[StorageBackend], prefix=""):
+        self.backendClass = backendClass
         self.prefix = prefix
-        self.indexes = []
+        self.indexes: list[tuple[int, Index]] = []
 
     def all(self):
         """Lists all the indexes registered in this index registry"""
         return [_[0] for _ in self.indexes]
 
-    def rebuild(self, sync=False):
+    def rebuild(self, sync=False) -> int:
         """Lists all the indexes registered in this index registry"""
         count = 0
         for index, storable_class in self.indexes:

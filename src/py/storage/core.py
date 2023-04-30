@@ -1,4 +1,4 @@
-from .utils import numcode
+from .utils import numcode, TPrimitive
 from typing import ClassVar, Any
 from uuid import uuid4
 from datetime import datetime
@@ -17,7 +17,7 @@ def asJSON(value: Any) -> str:
     return json.dumps(value)
 
 
-def asPrimitive(value: Any, **options):
+def asPrimitive(value: Any, **options) -> TPrimitive:
     options.setdefault("depth", 1)
     if value in (None, True, False):
         return value

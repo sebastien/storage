@@ -1,4 +1,4 @@
-from ..core import Operation, asJSON, NOTHING
+from ..core import Operation, asJSON, unJSON, NOTHING
 import logging
 
 # FIXME: Backend should support primitive data only, and do the serialization

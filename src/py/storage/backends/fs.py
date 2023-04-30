@@ -11,6 +11,7 @@ import shutil
 #
 # -----------------------------------------------------------------------------
 
+# TODO: This does not detect local changes to the file
 # TODO: Should add a backend that caches,
 class DirectoryBackend(StorageBackend):
     """A backend that stores the values as files with the given `DATA_EXTENSION`

@@ -4,7 +4,7 @@ from threading import Lock
 from math import floor
 
 
-TPrimitive = dict[str, Any]
+TPrimitive = dict[str, Any] | list[Any] | str | int | float | bool
 
 
 @contextmanager
