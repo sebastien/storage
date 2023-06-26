@@ -1,5 +1,5 @@
 import time, threading, json, weakref, types, datetime, traceback, inspect
-from typing import ClassVar, Self, Callable, Optional, Iterator, Any, List
+from typing import ClassVar, Self, Callable, Optional, Iterator, Any, List, Type
 from .backends import StorageBackend
 from .index import Index
 from .utils import atomic, TPrimitive
@@ -90,7 +90,7 @@ class StoredObject(Storable):
     STORAGE: ClassVar[Optional["ObjectStorage"]] = None
     PROPERTIES: ClassVar[dict[str, Any]] = {}
     COMPUTED_PROPERTIES: ClassVar[list[str]] = []
-    RELATIONS = {}
+    RELATIONS: ClassVar[dict[str, Type["StoredObject"]]] = {}
     RESERVED: ClassVar[list[str]] = ["type", "oid", "updates"]
     INDEXES: ClassVar[list[Index]] = []
 
@@ -269,6 +269,8 @@ class StoredObject(Storable):
         """A convenient fonction that will return the full object corresponding
         to the oid if it is in base, or will return a stripped down version with
         oid and class."""
+        if not cls.STORAGE:
+            raise RuntimeError("Object not bound to a storage")
         o = cls.STORAGE.get(cls.StorageKey(oid))
         if o:
             return o.export(**options)
