@@ -269,3 +269,6 @@ class DirectoryBackend(StorageBackend):
 
 	def _closeFileHandle(self, handle):
 		handle.close()
+
+
+# EOF

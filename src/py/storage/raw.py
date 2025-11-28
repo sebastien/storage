@@ -1,5 +1,9 @@
-import types, weakref, threading, io, base64
-from . import (
+import types
+import weakref
+import threading
+import io
+import base64
+from .core import (
 	Storable,
 	Identifier,
 	getCanonicalName,

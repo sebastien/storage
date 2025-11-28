@@ -1,12 +1,12 @@
-from . import Backend
+from . import StorageBackend
 
 
-class MemoryBackend(Backend):
+class MemoryBackend(StorageBackend):
 	"""A really simple backend that wraps Python's dictionary. Keys are converted
 	to JSON while values are kept as-is."""
 
 	def __init__(self):
-		Backend.__init__(self)
+		super().__init__(self)
 		self.values = {}
 
 	def add(self, key, data):
@@ -40,11 +40,11 @@ class MemoryBackend(Backend):
 		assert key is None, "Not implemented"
 		return len(self.values)
 
-	def keys(self, collection=None, order=Backend.ORDER_NONE):
+	def keys(self, collection=None, order=StorageBackend.ORDER_NONE):
 		keys = list(self.values.keys())
-		if order == Backend.ORDER_ASCENDING:
+		if order == StorageBackend.ORDER_ASCENDING:
 			keys = sorted(keys)
-		elif order == Backend.ORDER_DESCENDING:
+		elif order == StorageBackend.ORDER_DESCENDING:
 			keys = sorted(keys, reverse=True)
 		for key in keys:
 			yield self._deserialize(key=key)

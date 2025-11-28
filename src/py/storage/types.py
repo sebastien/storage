@@ -25,6 +25,7 @@ class Types:
 	BOOL: ClassVar[str] = "bool"
 	DATE: ClassVar[str] = "date"
 	TIME: ClassVar[str] = "time"
+	DATETIME: ClassVar[str] = "datetime"
 	NUMBER: ClassVar[str] = "number"
 	INTEGER: ClassVar[str] = "int"
 	POSITIVE: ClassVar[str] = "int>0"
