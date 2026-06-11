@@ -6,7 +6,10 @@ from storage_base import (
 	DirectoryBackend,
 	A,
 	B,
+	PrefixedUser,
+	PrefixedAttachment,
 )
+from storage.core import Identifier
 import unittest, os, shutil, sys, json
 
 
@@ -17,11 +20,17 @@ class StoredObjectTest(unittest.TestCase):
 		if hasattr(self, "raw"):
 			self.raw.release()
 		self.path = os.path.basename(__file__).split(".")[0]
-		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(Message, A, B)
-		self.raw = RawStorage(DirectoryBackend(self.path)).use(Attachment)
+		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(
+			Message, A, B, PrefixedUser
+		)
+		self.raw = RawStorage(DirectoryBackend(self.path)).use(
+			Attachment, PrefixedAttachment
+		)
 		self.assertIsNotNone(Message.STORAGE)
 		self.assertIsNotNone(A.STORAGE)
 		self.assertIsNotNone(B.STORAGE)
+		self.assertIsNotNone(PrefixedUser.STORAGE)
+		self.assertIsNotNone(PrefixedAttachment.STORAGE)
 
 	def tearDown(self):
 		self.objects.release()
@@ -80,6 +89,30 @@ class StoredObjectTest(unittest.TestCase):
 		data["value"] = "Changed!"
 		with file(self.path + "/A/" + str(oid) + ".json", "w") as f:
 			json.dump(data, f)
+
+	def testIdentifierOIDPrefix(self):
+		plain_oid = Identifier.OID()
+		assert len(plain_oid.split("-")) == 3
+
+		oid = Identifier.OID(prefix="USER")
+		assert oid.startswith("USER-")
+		assert len(oid.split("-")) == 4
+
+	def testPrefixedObjectOID(self):
+		u = PrefixedUser(value="Pouet!")
+		assert u.oid.startswith("USER-")
+		u.save()
+		oid = u.oid
+		assert PrefixedUser.Has(oid)
+		assert PrefixedUser.Get(oid).value == "Pouet!"
+
+	def testPrefixedRawOID(self):
+		a = PrefixedAttachment("pouetpouet")
+		assert a.oid.startswith("FILE-")
+		a.save()
+		oid = a.oid
+		assert PrefixedAttachment.Has(oid)
+		assert list(PrefixedAttachment.Get(oid).data()) == ["pouetpouet"]
 
 
 if __name__ == "__main__":

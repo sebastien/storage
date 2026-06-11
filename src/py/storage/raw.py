@@ -52,13 +52,15 @@ Allows to store raw data and its meta-information
 
 class StoredRaw(Storable):
 	OID_GENERATOR = Identifier.Stamp
+	OID_PREFIX = None
 	RESERVED = ("type", "oid", "updates")
 	COLLECTION = None
 	STORAGE = None
 
 	@classmethod
 	def GenerateOID(cls):
-		return cls.OID_GENERATOR()
+		oid = cls.OID_GENERATOR()
+		return f"{cls.OID_PREFIX}-{oid}" if cls.OID_PREFIX else oid
 
 	@classmethod
 	def Import(cls, meta, data=None, updateProperties=False):
@@ -176,7 +178,7 @@ class StoredRaw(Storable):
 		if "oid" in meta:
 			self.oid = meta["oid"]
 		else:
-			self.oid = StoredRaw.GenerateOID()
+			self.oid = self.GenerateOID()
 		self._meta = {}
 		self._hasDataChanged = True
 		self._data = data
@@ -213,13 +215,13 @@ class StoredRaw(Storable):
 		return self._hasDataChanged
 
 	def setDataSaved(self):
-		if type(self.data) is types.FileType:
-			# We force closing the file and put the data to None
+		if hasattr(self._data, "close"):
+			# We force closing file-like objects once the backend has persisted them.
 			try:
-				self.data.close()
+				self._data.close()
 			except:
 				pass
-			self.data = None
+			self._data = None
 		self._hasDataChanged = False
 
 	def setData(self, data, timestamp=None):

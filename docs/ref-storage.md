@@ -14,6 +14,7 @@ The storage module provides a composable, persistent object storage system for P
 - Type-safe properties using `PROPERTIES` declaration
 - Relations to other `StoredObject` instances via `RELATIONS`
 - Automatic OID (Object ID) generation
+- Optional `OID_PREFIX` support for type-disambiguated identifiers
 - Built-in caching and weak-reference management
 - Indexing support via `INDEX_BY`
 - Export/Import to/from primitive dictionaries
@@ -45,6 +46,13 @@ storage = ObjectStorage(DirectoryBackend("Data/")).use(Account)
 # Create and save objects
 account = Account(properties={"email": "user@example.com", "name": "John"})
 account.save()
+
+# Add a class prefix when needed
+class User(StoredObject):
+	OID_PREFIX = "USER"
+
+class MeetingNotes(StoredRaw):
+	OID_PREFIX = "MTNG"
 
 # Retrieve by OID
 retrieved = Account.Get(account.oid)

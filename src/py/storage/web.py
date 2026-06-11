@@ -1,28 +1,37 @@
-import types, json
-from storage import Storable, restore
-from storage.raw import StoredRaw
-import retro.web
+import types
+import sys
+from pathlib import Path
+from typing import Iterable
+
+try:
+	from extra import HTTPRequest, HTTPResponse, Service
+	from extra.routing import Handler
+except ImportError:
+	extra_path = Path(__file__).resolve().parents[3] / "deps" / "extra" / "src" / "py"
+	if str(extra_path) not in sys.path:
+		sys.path.insert(0, str(extra_path))
+	from extra import HTTPRequest, HTTPResponse, Service
+	from extra.routing import Handler
+
+from .core import Storable, restore
+from .raw import StoredRaw
+
 
 # FIXME: It seems that sometimes when one element is sent as a field value
 # (like shootingback.model.Clip.tags=["Youth"], only "Youth" is stored
 # instead of ["Youth"]. Might be in objects or JSON conversion.
 
-# FIXME: Document me!!!
 
-
-# TODO: @http("/asdsada/${asdsa}"
 def http(url, restrict=None, methods=None, contentType=None, export=None):
-	"""Adds a `StorageDecoration` information to the give Storable subclass"""
+	"""Adds HTTP exposure information to a storable class or method."""
 
 	def wrapper(storableClassOrFunction):
-		# Or did we use it to decorate a method?
 		if type(storableClassOrFunction) is types.FunctionType:
 			setattr(
 				storableClassOrFunction,
 				StorageDecoration.KEY_FUNCTION,
 				(url, restrict, methods, contentType),
 			)
-		# Did we use @http to decorate a storable class?
 		else:
 			storable = storableClassOrFunction
 			s = StorageDecoration(storable, url, restrict, methods, export)
@@ -32,15 +41,8 @@ def http(url, restrict=None, methods=None, contentType=None, export=None):
 	return wrapper
 
 
-# -----------------------------------------------------------------------------
-#
-# STORAGE DECORATION
-#
-# -----------------------------------------------------------------------------
-
-
 class StorageDecoration:
-	"""A class that allows to store decoration information on Storable classes"""
+	"""Stores HTTP exposure metadata on storable classes."""
 
 	KEY = "_storage_web_StorageDecoration"
 	KEY_FUNCTION = "_storage_web_StorageDecoration_Function"
@@ -61,13 +63,9 @@ class StorageDecoration:
 		self.url = url
 		self.restrict = restrict
 		self.httpMethods = [methods] if isinstance(methods, str) else methods
-		# These are options to give to the object export function. If export
-		# is a string, it is assumed to be a profile.
 		if type(export) in (str, str):
 			export = dict(profile=export)
 		self.export = export or {}
-		# NOTE: We add the "web" target so that object export function can
-		# hide information that should not be communicated (ie. password)
 		self.export["target"] = "web"
 
 	def listInvocables(self, storable=None):
@@ -94,26 +92,15 @@ class StorageDecoration:
 		)
 
 
-# -----------------------------------------------------------------------------
-#
-# STORAGE SERVICE
-#
-# -----------------------------------------------------------------------------
-
-
-class StorageServer(retro.web.Component):
-	"""A Retro web component that exposes the given storable classes through
-	a RESTful Web API.
-
-	The given classes need to have been previously decorated using the `http`
-	decorator in this module.
-	"""
+class StorageServer(Service):
+	"""An Extra service that exposes storables through a REST-like API."""
 
 	LIST_COUNT = 20
 
 	def __init__(self, prefix="/api", classes=None, readonly=False):
-		retro.web.Component.__init__(self)
-		self.PREFIX = prefix
+		prefix = prefix.strip("/")
+		prefix = prefix + "/" if prefix else ""
+		Service.__init__(self, prefix=prefix)
 		self.storableClasses = []
 		self.readonly = readonly
 		self._onUpdate = []
@@ -133,13 +120,11 @@ class StorageServer(retro.web.Component):
 			_()
 
 	def use(self, *storableClasses):
-		"""Alias for `add`. Uses the given decorated storable classes and
-		expose them through the API."""
+		"""Alias for `add`."""
 		return self.add(*storableClasses)
 
 	def add(self, *storableClasses):
-		"""Uses the given decorated storable classes and expose them through
-		the API."""
+		"""Registers decorated storable classes for HTTP exposure."""
 		for s in storableClasses:
 			info = getattr(s, StorageDecoration.KEY)
 			assert info, "Storable class must be decorated with StorageDecoration"
@@ -147,67 +132,52 @@ class StorageServer(retro.web.Component):
 				"Storable information should be StorageDecoration"
 			)
 			self.storableClasses.append(s)
+		self._handlers = None
 		return self
 
-	def create(self, request, storableClass):
-		"""Creates a new instance of the given storable class based on the
-		given request data."""
+	def iterHandlers(self) -> Iterable[Handler]:
+		for storableClass in self.storableClasses:
+			yield from self._iterHandlers(storableClass)
+
+	async def create(self, request, storableClass):
 		if self.readonly:
 			return request.notAuthorized()
 		info = StorageDecoration.Get(storableClass)
-		return self.onStorableCreate(storableClass, info, request)
+		return await self.onStorableCreate(storableClass, info, request)
 
 	def remove(self, request, storableClass, sid):
-		"""Removes the given storable."""
 		if self.readonly:
 			return request.notAuthorized()
 		info = StorageDecoration.Get(storableClass)
 		return self.onStorableRemove(storableClass, info, request, sid)
 
-	def update(self, request, storableClass, sid):
-		"""Updates an existing instance of the given storable class based on the
-		given request data."""
+	async def update(self, request, storableClass, sid):
 		if self.readonly:
 			return request.notAuthorized()
 		info = StorageDecoration.Get(storableClass)
-		return self.onStorableUpdate(storableClass, info, request, sid)
+		return await self.onStorableUpdate(storableClass, info, request, sid)
 
 	def get(self, request, storableClass, sid):
-		"""Gets the instance of the given storable class with the given id."""
 		info = StorageDecoration.Get(storableClass)
 		return self.onStorableGet(storableClass, info, request, sid)
 
-	# TODO: Implement invoke
-
-	def start(self):
-		"""At component startup, this generates the HTTP handlers for
-		the storables."""
-		# We do not use a for iteration as we need to creat lambda specific to
-		# each storable class, and similarilty to JavaScript a closure that closes
-		# on an iteration will keep the first argument
-		for _ in self.storableClasses:
-			self._generateHandlers(_)
-
-	def onStorableCreate(self, storableClass, info, request):
-		"""Extracts the JSON data from the given request and use it as import
-		data for the  given class"""
-		data = request.data()
-		if data:
-			data = json.loads(data)
+	async def onStorableCreate(self, storableClass, info, request):
+		if self.readonly:
+			return request.notAuthorized()
+		data = await request.loadData()
+		if data is not None:
 			storable = storableClass.Import(data).save()
-		# FIXME: We should have an option allowing to create an object
-		# on new data
 		else:
 			storable = storableClass()
 		self._doUpdate()
 		return request.returns(storable.export(**info.getExportOptions()))
 
-	def onStorableUpdate(self, storableClass, info, request, sid):
+	async def onStorableUpdate(self, storableClass, info, request, sid):
+		if self.readonly:
+			return request.notAuthorized()
 		storable = storableClass.Get(sid)
-		request.load()
-		data = request.params()
+		data = await request.loadParams()
 		if not storable:
-			# We create the object if it does not already exist (non-strict update)
 			storable = storableClass.Import(data)
 			storable.save()
 		else:
@@ -217,9 +187,9 @@ class StorageServer(retro.web.Component):
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	def onStorableRemove(self, storableClass, info, request, sid):
+		if self.readonly:
+			return request.notAuthorized()
 		storable = storableClass.Get(sid)
-		request.load()
-		data = request.params()
 		if storable:
 			storable.remove()
 			self._doUpdate()
@@ -229,51 +199,43 @@ class StorageServer(retro.web.Component):
 
 	def onStorableGet(self, storableClass, info, request, sid):
 		storable = storableClass.Get(sid)
-		# FIXME: Should have a property to tell whether we create an object
-		# when it does not exist
 		if not storable:
-			if request.has("strict"):
+			if request.query and "strict" in request.query:
 				return request.notFound()
 			else:
 				storable = storableClass(oid=sid)
 		return request.returns(storable.export(**info.getExportOptions()))
 
-	def onStorableInvokeMethod(
+	async def onStorableInvokeMethod(
 		self, storableClass, name, contentType, request, sid, *args, **kwargs
 	):
 		storable = storableClass.Get(sid)
 		if not storable:
 			return request.notFound()
 		method = getattr(storable, name)
-		if request.method() == "POST":
-			request.load()
-			kwargs = dict(list(request.params().items()) + list(kwargs.items()))
-			# If post is passed without named arguments, it will be
-			# mapped to the '' key.
-			if "" in kwargs:
-				args = [kwargs.get("")]
-				del kwargs[""]
-			else:
-				args = None
+		args = list(args) if args else []
+		if request.method == "POST":
+			data = await request.loadData()
+			if isinstance(data, list):
+				args = data
+			elif isinstance(data, dict):
+				body_kwargs = dict(data)
+				body_kwargs.update(kwargs)
+				kwargs = body_kwargs
+			elif data is not None:
+				raise ValueError(f"Unsupported payload type: {type(data)}")
 		else:
-			# If we're not posting, then we might want to grab the parameters from
-			# the url. This is temporary, as the call will fail if extra, non-matching
-			# kwargs/params are given.
-			if not args and not kwargs:
-				kwargs = request.params()
-		if not storable:
-			return request.notFound()
-		# We restore the values, if any
+			query = dict(request.query or {})
+			query.update(kwargs)
+			kwargs = query
 		args = [restore(_) for _ in args] if args else []
-		kwargs = (
-			dict((k, restore(v)) for k, v in list(kwargs.items())) if kwargs else {}
-		)
+		kwargs = dict((k, restore(v)) for k, v in list(kwargs.items())) if kwargs else {}
+		result = method(*args, **kwargs)
 		if not contentType:
-			return request.returns(method(*args, **kwargs))
-		else:
-			if isinstance(contentType, types.FunctionType):
-				contentType = contentType(storable)
-			return request.respond(method(*args, **kwargs), contentType=contentType)
+			return request.returns(result)
+		if isinstance(contentType, types.FunctionType):
+			contentType = contentType(storable)
+		return request.respond(result, contentType=contentType)
 
 	def onStorableInvokeOperation(self, storableClass, name, request, *args, **kwargs):
 		method = getattr(storableClass, name)
@@ -296,56 +258,71 @@ class StorageServer(retro.web.Component):
 			or "application/x-binary",
 		)
 
-	def _generateHandlers(self, s):
-		"""Internal method that generates HTTP handlers for the given
-		storable class."""
-		info = StorageDecoration.Get(s)
+	def _handler(self, functor, *methods):
+		return Handler(functor=functor, methods=list(methods))
+
+	def _iterHandlers(self, storableClass):
+		info = StorageDecoration.Get(storableClass)
 		url = info.url or info.getName()
-		handler_create = lambda request: self.onStorableCreate(s, info, request)
-		handler_update = lambda request, sid: self.onStorableUpdate(
-			s, info, request, sid
-		)
-		handler_get = lambda request, sid: self.onStorableGet(s, info, request, sid)
-		handler_remove = lambda request, sid: self.onStorableRemove(
-			s, info, request, sid
-		)
-		handler_list = lambda request, start=0, end=None: self.onStorableList(
-			s, info, request, start, end
-		)
-		# Generic to storable
-		self.registerHandler(handler_create, dict(GET_POST=url))
-		self.registerHandler(handler_update, dict(POST=url + "/{sid:segment}"))
-		self.registerHandler(handler_remove, dict(POST=url + "/{sid:segment}/remove"))
-		self.registerHandler(handler_get, dict(GET=url + "/{sid:segment}"))
-		self.registerHandler(handler_list, dict(GET=url + "/list"))
-		self.registerHandler(handler_list, dict(GET=url + "/list/{start:int}"))
-		self.registerHandler(handler_list, dict(GET=url + "/list/{start:int}:"))
-		self.registerHandler(
-			handler_list, dict(GET=url + "/list/{start:int}:{end:int}")
-		)
-		# Lists the invocables defined in the storable and bind URLs
+		url = url[1:] if url.startswith("/") else url
+
+		async def handler_create(request: HTTPRequest) -> HTTPResponse:
+			return await self.onStorableCreate(storableClass, info, request)
+
+		async def handler_update(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return await self.onStorableUpdate(storableClass, info, request, sid)
+
+		def handler_get(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return self.onStorableGet(storableClass, info, request, sid)
+
+		def handler_remove(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return self.onStorableRemove(storableClass, info, request, sid)
+
+		def handler_list(
+			request: HTTPRequest, start: int = 0, end: int | None = None
+		) -> HTTPResponse:
+			return self.onStorableList(storableClass, info, request, start, end)
+
+		yield self._handler(handler_create, ("GET", url), ("POST", url))
+		yield self._handler(handler_update, ("POST", url + "/{sid:segment}"))
+		yield self._handler(handler_remove, ("POST", url + "/{sid:segment}/remove"))
+		yield self._handler(handler_get, ("GET", url + "/{sid:segment}"))
+		yield self._handler(handler_list, ("GET", url + "/list"))
+		yield self._handler(handler_list, ("GET", url + "/list/{start:int}"))
+		yield self._handler(handler_list, ("GET", url + "/list/{start:int}:"))
+		yield self._handler(handler_list, ("GET", url + "/list/{start:int}:{end:int}"))
+
 		for name, meta in info.listInvocables():
+			invoke_url, restrict, methods, contentType = meta
+			invoke_url = invoke_url[1:] if invoke_url.startswith("/") else invoke_url
 
-			def wrap(name, meta):
-				invoke_url, restrict, methods, contentType = meta
-				# TODO: What about restrict?
-				handler = (
-					lambda request, sid, *args, **kwargs: self.onStorableInvokeMethod(
-						s, name, contentType, request, sid, *args, **kwargs
-					)
+			async def handler_invoke(
+				request: HTTPRequest,
+				sid: str,
+				_handlerName: str = name,
+				_contentType=contentType,
+				**kwargs,
+			) -> HTTPResponse:
+				return await self.onStorableInvokeMethod(
+					storableClass,
+					_handlerName,
+					_contentType,
+					request,
+					sid,
+					**kwargs,
 				)
-				urls = {}
-				if isinstance(methods, str):
-					methods = (methods,)
-				for method in methods or ("GET", "POST"):
-					urls[method.upper()] = url + "/{sid:segment}/" + invoke_url
-				self.registerHandler(handler, urls)
 
-			wrap(name, meta)
-		# Specific to StoredRaw
-		if issubclass(s, StoredRaw):
-			handler = lambda request, sid: self.onRawGetData(s, request, sid)
-			self.registerHandler(handler, dict(GET=url + "/{sid:segment}/data"))
+			urls = []
+			methods = (methods,) if isinstance(methods, str) else methods
+			for method in methods or ("GET", "POST"):
+				urls.append((method.upper(), url + "/{sid:segment}/" + invoke_url))
+			yield self._handler(handler_invoke, *urls)
+
+		if issubclass(storableClass, StoredRaw):
+			def handler_raw(request: HTTPRequest, sid: str) -> HTTPResponse:
+				return self.onRawGetData(storableClass, request, sid)
+
+			yield self._handler(handler_raw, ("GET", url + "/{sid:segment}/data"))
 
 
 # EOF

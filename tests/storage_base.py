@@ -26,6 +26,15 @@ class Attachment(StoredRaw):
 	pass
 
 
+class PrefixedUser(StoredObject):
+	OID_PREFIX = "USER"
+	PROPERTIES = dict(value=Types.STRING)
+
+
+class PrefixedAttachment(StoredRaw):
+	OID_PREFIX = "FILE"
+
+
 class Message(StoredObject):
 	RELATIONS = lambda _: dict(
 		replyTo=[Message], references=[Message], attachments=[Attachment]

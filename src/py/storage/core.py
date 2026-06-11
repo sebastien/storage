@@ -247,14 +247,15 @@ class Identifier:
 		return base + n + r
 
 	@classmethod
-	def OID(cls, node: int = 0) -> str:
+	def OID(cls, node: int = 0, prefix: str | None = None) -> str:
 		"""Creates an id that contains a timestamp, a node id and some random
 		factor, that should make the jobs ids largely sortable"""
 		t: str = numcode(time.clock_gettime_ns(time.CLOCK_TAI)).rjust(14, "0")[:14]
 		n: str = numcode(node).rjust(4, "0")[:4]
 		# NOTE: math.log(math.pow(2,3 * 8), 62) ~ 3
 		r = numcode(int.from_bytes(os.urandom(3))).rjust(4, "0")[:4]
-		return f"{t}-{n}-{r}"
+		oid = f"{t}-{n}-{r}"
+		return f"{prefix}-{oid}" if prefix else oid
 
 	@classmethod
 	def Timestamp(cls, rand=3, nodes=4):

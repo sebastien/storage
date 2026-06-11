@@ -85,7 +85,8 @@ class StoredObject(Storable):
 	a storage proxy that implements you specific strategy.
 	"""
 
-	OID_GENERATOR: ClassVar[Callable[[], int]] = Identifier.OID
+	OID_GENERATOR: ClassVar[Callable[[], str | int]] = Identifier.OID
+	OID_PREFIX: ClassVar[Optional[str]] = None
 	SKIP_EXTRA_PROPERTIES: ClassVar[bool] = False
 	COLLECTION = None
 	STORAGE: ClassVar[Optional["ObjectStorage"]] = None
@@ -127,7 +128,8 @@ class StoredObject(Storable):
 	@classmethod
 	def GenerateOID(cls):
 		"""Generates a new object ID for this class"""
-		return cls.OID_GENERATOR()
+		oid = cls.OID_GENERATOR()
+		return f"{cls.OID_PREFIX}-{oid}" if cls.OID_PREFIX else oid
 
 	@classmethod
 	def All(cls, since=None) -> Iterator["StoredObject"]:
