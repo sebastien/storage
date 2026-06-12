@@ -158,6 +158,10 @@ class StoredObjectIndexTest(unittest.TestCase):
 		for i in range(10):
 			self.assertIsNone(noneIfEmpty(self.index.get(i)))
 
+	def tearDown(self):
+		Value.INDEXES = []
+		self.objectStorage.release()
+
 
 class DBMStorageTest(unittest.TestCase):
 	"""Test the persistence of the index when using theDBM backend"""
@@ -185,7 +189,7 @@ class DBMStorageTest(unittest.TestCase):
 		new_index = Index(new_index_storage, Value.ByValue, lambda _: _)
 		# We make sure that we can access the index
 		self.assertEqual(
-			sorted(list(new_index.STORAGE.forwardBackend.keys())), range(10)
+			sorted(list(new_index.STORAGE.forwardBackend.keys())), list(range(10))
 		)
 		for i in range(10):
 			self.assertEqual(_len(new_index.get(i)), 10)
@@ -212,7 +216,7 @@ class DBMStorageTest(unittest.TestCase):
 		new_index = Index(new_index_storage, Value.ByValue, lambda _: _)
 		# Tests the new index (same as testAccess)
 		self.assertEqual(
-			sorted(list(new_index.STORAGE.forwardBackend.keys())), range(10)
+			sorted(list(new_index.STORAGE.forwardBackend.keys())), list(range(10))
 		)
 		for i in range(10):
 			self.assertEqual(_len(new_index.get(i)), 10)
@@ -233,7 +237,7 @@ class DBMStorageTest(unittest.TestCase):
 			self.assertIsNone(noneIfEmpty(new_index.get(i)))
 
 	def clean(self):
-		for f in ("index-fwd.db", "index-bwd.db"):
+		for f in ("index-fwd.dbm", "index-bwd.dbm"):
 			if os.path.exists(f):
 				os.unlink(f)
 			assert not os.path.exists(f)

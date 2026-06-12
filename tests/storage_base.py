@@ -27,12 +27,12 @@ class Attachment(StoredRaw):
 
 
 class PrefixedUser(StoredObject):
-	OID_PREFIX = "USER"
+	ID_PREFIX = "USER"
 	PROPERTIES = dict(value=Types.STRING)
 
 
 class PrefixedAttachment(StoredRaw):
-	OID_PREFIX = "FILE"
+	ID_PREFIX = "FILE"
 
 
 class Message(StoredObject):

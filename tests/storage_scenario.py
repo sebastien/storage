@@ -5,7 +5,7 @@ This test suite covers the
 """
 
 # TODO: Test for chain reaction of restores on object imports (using mutual-reference)
-# TODO: Test for export depth: an object set as property/relation should just be exported with (oid,type)
+# TODO: Test for export depth: an object set as property/relation should just be exported with (id,type)
 # TODO: Test the object.update preserves already existing properies
 
 

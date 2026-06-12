@@ -62,11 +62,11 @@ class Image(StoredRaw):
 
 	def getURL(self):
 		# FIXME: Should be done by storage.web
-		return "api/image/%s/full" % (self.oid)
+		return "api/image/%s/full" % (self.id)
 
 	def getPreviewURL(self):
 		# FIXME: Should be done by storage.web
-		return "api/image/%s/preview" % (self.oid)
+		return "api/image/%s/preview" % (self.id)
 
 	def export(self, **options):
 		r = super(Image, self).export(**options)
@@ -120,7 +120,7 @@ class Video(StoredRaw):
 		return None
 
 	def getApiUrl(self):
-		return "/api/video/%s/preview" % (self.oid)
+		return "/api/video/%s/preview" % (self.id)
 
 	def hasPreview(self):
 		return self.meta("thumbnail")
@@ -152,7 +152,7 @@ class Video(StoredRaw):
 		"""
 		formats = {}
 		if self.isOriginal():
-			formats["original"] = self.oid
+			formats["original"] = self.id
 			for _ in self.getAlternatives():
 				f = Video.Get(_).getFormat()
 				formats[f] = _
@@ -164,11 +164,11 @@ class Video(StoredRaw):
 		alternatives = self.meta("alternatives")
 		if not alternatives:
 			return None
-		video_oid = alternatives.get(format)
-		if not video_oid:
+		video_id = alternatives.get(format)
+		if not video_id:
 			return None
 		else:
-			return Video.Get(video_oid)
+			return Video.Get(video_id)
 
 	def hasAlternative(self, format):
 		alternatives = self.meta("alternatives")
@@ -179,13 +179,13 @@ class Video(StoredRaw):
 	def setAlternative(self, format, video):
 		alternatives = self.meta("alternatives")
 		if not alternatives:
-			self.meta("alternatives", {(format): video.getID()})
+			self.meta("alternatives", {(format): video.id})
 		else:
-			self.meta("alternatives")[format] = video.getID()
+			self.meta("alternatives")[format] = video.id
 		# We copy the thumbnail/sequence, if any
 		video.meta("thumbnail", self.meta("thumbnail"))
 		video.meta("sequence", self.meta("sequence"))
-		video.meta("original", self.getID())
+		video.meta("original", self.id)
 		return self
 
 	def getFormat(self):

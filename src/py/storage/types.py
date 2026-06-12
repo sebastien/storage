@@ -1,8 +1,19 @@
-from typing import ClassVar
+"""Type tags and simple type-format helpers."""
+
 from datetime import datetime
+from typing import ClassVar
+
+
+# -----------------------------------------------------------------------------
+#
+# TYPE HELPERS
+#
+# -----------------------------------------------------------------------------
 
 
 class MapType:
+	"""Represents a keyed type map specification."""
+
 	def __init__(self, kwargs):
 		self.kwargs = kwargs
 
@@ -21,7 +32,16 @@ class MapType:
 		return res
 
 
+# -----------------------------------------------------------------------------
+#
+# TYPE TAGS
+#
+# -----------------------------------------------------------------------------
+
+
 class Types:
+	"""Namespace of compact type tags and constructors."""
+
 	BOOL: ClassVar[str] = "bool"
 	DATE: ClassVar[str] = "date"
 	TIME: ClassVar[str] = "time"
@@ -75,18 +95,14 @@ class Types:
 
 	@classmethod
 	def AsString(cls, value):
-		if isinstance(value, str) or isinstance(value, str):
+		if isinstance(value, str):
 			return value
 		else:
 			return str(value)
 
 	@classmethod
 	def AsBoolean(cls, value):
-		if (
-			isinstance(value, str)
-			or isinstance(value, str)
-			and value.lower() == "false"
-		):
+		if isinstance(value, str) and value.lower() == "false":
 			return False
 		return value and True or False
 
@@ -102,9 +118,21 @@ class Types:
 		try:
 			date = datetime.strptime(value, "%Y-%m-%d")
 			date = list(date.timetuple())
-		except:
+		except Exception:
 			date = None
 		return date
+
+
+# -----------------------------------------------------------------------------
+#
+# PUBLIC API
+#
+# -----------------------------------------------------------------------------
+
+__all__ = [
+	"MapType",
+	"Types",
+]
 
 
 # EOF

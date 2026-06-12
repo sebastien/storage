@@ -13,8 +13,8 @@ The storage module provides a composable, persistent object storage system for P
 **Key Features**:
 - Type-safe properties using `PROPERTIES` declaration
 - Relations to other `StoredObject` instances via `RELATIONS`
-- Automatic OID (Object ID) generation
-- Optional `OID_PREFIX` support for type-disambiguated identifiers
+- Automatic ID generation
+- Optional `ID_PREFIX` support for type-disambiguated identifiers
 - Built-in caching and weak-reference management
 - Indexing support via `INDEX_BY`
 - Export/Import to/from primitive dictionaries
@@ -49,13 +49,13 @@ account.save()
 
 # Add a class prefix when needed
 class User(StoredObject):
-	OID_PREFIX = "USER"
+	ID_PREFIX = "USER"
 
 class MeetingNotes(StoredRaw):
-	OID_PREFIX = "MTNG"
+	ID_PREFIX = "MTNG"
 
-# Retrieve by OID
-retrieved = Account.Get(account.oid)
+# Retrieve by ID
+retrieved = Account.Get(account.id)
 
 # Query all
 for acc in Account.All():
@@ -75,12 +75,12 @@ value = account.getProperty("name")
 ```
 
 **Class Methods**:
-- `ClassName.Get(oid)` - Retrieve object by OID
+- `ClassName.Get(id)` - Retrieve object by ID
 - `ClassName.All()` - Iterate all objects of this type
 - `ClassName.Count()` - Count objects
 - `ClassName.List(count, start, end)` - List objects with pagination
-- `ClassName.Has(oid)` - Check if object exists
-- `ClassName.Ensure(oid)` - Get or create object
+- `ClassName.Has(id)` - Check if object exists
+- `ClassName.Ensure(id)` - Get or create object
 - `ClassName.Import(properties)` - Create from dict/export
 
 **Instance Methods**:
@@ -142,10 +142,10 @@ path = image.path()
 ```
 
 **Class Methods**:
-- `ClassName.Get(oid)` - Retrieve by OID
+- `ClassName.Get(id)` - Retrieve by ID
 - `ClassName.All()` - Iterate all
 - `ClassName.Count()` - Count objects
-- `ClassName.Has(oid)` - Check existence
+- `ClassName.Has(id)` - Check existence
 
 **Instance Methods**:
 - `.meta(name, value)` - Get/set metadata
@@ -201,7 +201,7 @@ comment.replies.clear()
 - `.clear()` - Remove all
 - `.get(start, limit, resolve)` - Get with pagination
 - `.one(index)` - Get single item
-- `.has(obj_or_oid)` - Check membership
+- `.has(obj_or_id)` - Check membership
 - `.list()` / `.all()` - Get all as iterator
 - `len(relation)` - Count items
 
@@ -440,7 +440,7 @@ with storage:
 
 ### Exporting Data
 ```python
-# Shallow export (oid + type only)
+# Shallow export (id + type only)
 obj.export(depth=0)
 
 # Full export (all properties + relations as references)
@@ -470,7 +470,7 @@ for account in Account.List(count=10, start=0):
 ```python
 # Every object tracks update times per property
 timestamp = obj.getUpdateTime("email")  # When email was last updated
-timestamp = obj.getUpdateTime("oid")    # When object was last modified
+timestamp = obj.getUpdateTime("id")     # When object was last modified
 ```
 
 ## Common Gotchas
@@ -479,15 +479,15 @@ timestamp = obj.getUpdateTime("oid")    # When object was last modified
 
 2. **Save after modifications**: Changes are not auto-persisted, call `.save()`
 
-3. **Relations store references**: When exporting, relations export as `{oid, type}` by default (shallow)
+3. **Relations store references**: When exporting, relations export as `{id, type}` by default (shallow)
 
 4. **Indexes need rebuilding**: After bulk changes, call `indexes.rebuild()`
 
 5. **StoredRaw data streaming**: Use `.data()` for large files, not `.loadData()`
 
-6. **Collection names**: Objects stored as `ClassName.oid`, customize with `COLLECTION` attribute
+6. **Collection names**: Objects stored as `ClassName.id`, customize with `COLLECTION` attribute
 
-7. **Reserved properties**: Cannot use `type`, `oid`, `updates` as property names
+7. **Reserved properties**: Cannot use `type`, `id`, `updates` as property names
 
 ## Code Style (Per AGENTS.md)
 

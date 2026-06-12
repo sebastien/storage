@@ -78,21 +78,21 @@ class StorageWebTest(unittest.TestCase):
 		)
 		self.assertEqual(response.status, 200)
 		self.assertEqual(created["value"], "alpha")
-		oid = created["oid"]
+		id = created["id"]
 
-		response, fetched = self.requestJSON("GET", f"/api/items/{oid}")
+		response, fetched = self.requestJSON("GET", f"/api/items/{id}")
 		self.assertEqual(response.status, 200)
-		self.assertEqual(fetched["oid"], oid)
+		self.assertEqual(fetched["id"], id)
 		self.assertEqual(fetched["value"], "alpha")
 
 		response, listed = self.requestJSON("GET", "/api/items/list")
 		self.assertEqual(response.status, 200)
 		self.assertEqual(listed["count"], 1)
-		self.assertEqual(listed["values"][0]["oid"], oid)
+		self.assertEqual(listed["values"][0]["id"], id)
 
 		response, updated = self.requestJSON(
 			"POST",
-			f"/api/items/{oid}",
+			f"/api/items/{id}",
 			body="value=beta",
 			headers={"Content-Type": "application/x-www-form-urlencoded"},
 		)
@@ -101,7 +101,7 @@ class StorageWebTest(unittest.TestCase):
 
 		response, renamed = self.requestJSON(
 			"POST",
-			f"/api/items/{oid}/rename",
+			f"/api/items/{id}/rename",
 			body="value=gamma",
 			headers={"Content-Type": "application/x-www-form-urlencoded"},
 		)
@@ -109,16 +109,16 @@ class StorageWebTest(unittest.TestCase):
 		self.assertEqual(renamed["value"], "gamma")
 
 		response, described = self.requestJSON(
-			"GET", f"/api/items/{oid}/describe?prefix=hi-"
+			"GET", f"/api/items/{id}/describe?prefix=hi-"
 		)
 		self.assertEqual(response.status, 200)
 		self.assertEqual(described["value"], "hi-gamma")
 
-		response, removed = self.requestJSON("POST", f"/api/items/{oid}/remove")
+		response, removed = self.requestJSON("POST", f"/api/items/{id}/remove")
 		self.assertEqual(response.status, 200)
 		self.assertTrue(removed)
 
-		response, payload = self.request("GET", f"/api/items/{oid}?strict=1")
+		response, payload = self.request("GET", f"/api/items/{id}?strict=1")
 		self.assertEqual(response.status, 404)
 		self.assertEqual(payload.decode("utf8"), "Not Found")
 
@@ -143,7 +143,7 @@ class StorageWebTest(unittest.TestCase):
 	def testRawData(self):
 		blob = WebBlob(b"payload", contentType="text/plain")
 		blob.save()
-		response, payload = self.request("GET", f"/api/blobs/{blob.oid}/data")
+		response, payload = self.request("GET", f"/api/blobs/{blob.id}/data")
 		self.assertEqual(response.status, 200)
 		self.assertEqual(payload, b"payload")
 		self.assertEqual(response.headers.headers.get("Content-Type"), "text/plain")

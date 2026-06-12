@@ -203,7 +203,7 @@ class StorageServer(Service):
 			if request.query and "strict" in request.query:
 				return request.notFound()
 			else:
-				storable = storableClass(oid=sid)
+				storable = storableClass(id=sid)
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	async def onStorableInvokeMethod(

@@ -45,7 +45,7 @@ class DirectoryBackend(StorageBackend):
 		self.pathToKey = pathToKey or self._defaultPathToKey
 		self.writer = writer or self._defaultWriter
 		self.reader = reader or self._defaultReader
-		if extension != None:
+		if extension is not None:
 			self.DATA_EXTENSION = extension
 		parent_dir = os.path.dirname(os.path.abspath(self.root))
 		assert os.path.isdir(parent_dir), (
@@ -95,6 +95,15 @@ class DirectoryBackend(StorageBackend):
 		"""Returns the numbers of keys that match the given prefix(es)"""
 		return len(tuple(self.keys(prefix)))
 
+	def clear(self):
+		for key in list(self.keys()):
+			self.remove(key)
+
+	def list(self, key=None):
+		assert key is None, "Not implemented"
+		for storageKey in self.keys():
+			yield self.get(storageKey)
+
 	def add(self, key, data):
 		"""Adds the given data to the storage."""
 		self.writer(self, Operation.ADD, self.path(key), self._serialize(data=data))
@@ -131,6 +140,10 @@ class DirectoryBackend(StorageBackend):
 
 	def path(self, key, ext=None):
 		return self.keyToPath(self, key, ext)
+
+	def getFileName(self, key):
+		path = self.path(key)
+		return path if os.path.exists(path) else None
 
 	def stream(self, key, size=None) -> Iterator[bytes]:
 		# FIXME: Hope this does not leak
@@ -206,19 +219,19 @@ class DirectoryBackend(StorageBackend):
 			try:
 				shutil.copyfileobj(data, handle)
 				self._closeFileHandle(handle)
-			except Exception as e:
+			except Exception:
 				self._closeFileHandle(handle)
 				os.unlink(path)
-				raise e
+				raise
 			return True
 		else:
 			try:
 				handle.write(data)
 				self._closeFileHandle(handle)
-			except Exception as e:
+			except Exception:
 				self._closeFileHandle(handle)
 				os.unlink(path)
-				raise e
+				raise
 		return True
 
 	def readFile(self, path: str) -> bytes | None:
@@ -239,12 +252,13 @@ class DirectoryBackend(StorageBackend):
 		return self.root + key.replace(".", "/") + (ext or self.DATA_EXTENSION)
 
 	def _defaultPathToKey(self, backend, path, ext=None):
-		res = path.replace("/", ".")
 		ext = ext or self.DATA_EXTENSION
+		res = os.path.relpath(path, self.root)
 		if ext:
-			return res[len(self.root) : -len(ext)]
+			res = res[: -len(ext)]
 		else:
-			return res[len(self.root) :]
+			res = res
+		return res.replace(os.sep, ".")
 
 	def _defaultWriter(self, backend, operation, path, data):
 		"""Writes the given operation on the storable with the given key and data"""

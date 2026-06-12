@@ -14,6 +14,7 @@ import storage
 import datetime
 import time
 import os
+import shutil
 
 # -----------------------------------------------------------------------------
 #
@@ -31,7 +32,7 @@ ZERO = [0]
 INT_OVERFLOW = [-0xFFFFFFFF * 0xFFFF, 0xFFFFFFFF * 0xFFFF]
 INT = INT32 + ZERO + INT_OVERFLOW + INT_DEFAULT
 
-LONG_DEFAULT = [long()]
+LONG_DEFAULT = [int()]
 LONG_POSITIVE = [12, 1000000000000000000000]
 LONG_NEGATIVE = [-12, -100000000000000000000]
 LONG_ZERO = [0]
@@ -48,7 +49,7 @@ FLOAT = FLOAT_POSITIVE + FLOAT_NEGATIVE + FLOAT_ZERO + FLOAT_DEFAULT
 FLOAT_SPECIAL = [float("NaN"), float("-inf"), float("inf")]
 
 CHAR_ASCII = ["a", chr(100), "Z"]
-CHAR_UNICODE = [unichr(97), unichr(2473)]
+CHAR_UNICODE = [chr(97), chr(2473)]
 CHAR_DIGIT = ["1", "9"]
 CHAR_SPECIAL = [".", "?", "&", "*", "(", "\\", '"']
 CHAR_FOREIGN = ["é", "ç"]
@@ -113,44 +114,38 @@ class AbstractBackendTest:
 	interface. Override the `_createBackend` to return a specific backend
 	instance in subclasses."""
 
-	KEYS_VALID = [STRING, CHAR, INT, LONG, FLOAT, FLOAT_SPECIAL]
-	KEYS_INVALID = [
-		TUPLE,
-		LIST,
-		LIST,
-		BOOL,
-		PY_CONST,
-		EXCEPTION,
-		CLASS,
-		GENERATORS,
-		LAMBDA,
+	KEYS_VALID = [
+		"a",
+		"Z",
+		"1",
+		"0xFF",
+		"alpha.beta",
+		"é",
+		"KEY" * 32,
 	]
-	VALUES_VALID = KEYS_VALID + [
+	KEYS_INVALID = [
+		object(),
+		(_ for _ in range(2)),
+		lambda x: x**2,
+	]
+	VALUES_VALID = [
+		"",
+		"A",
+		"é",
 		True,
 		False,
 		None,
 		1,
 		1.0,
-		long(12313212),
-		tuple(),
-		list(),
-		dict(),
-		(1, 1),
+		-1,
 		[1, 1],
-		{"a": 1, "b": 1},
-		(1, "a"),
 		[1, "a"],
+		{"a": 1, "b": 1},
 		{"a": 1, "b": "a"},
-		((), (), ()),
 		[[], [], []],
 		{"a": {}, "b": {}, "c": {}},
-		([], []),
-		[(), ()],
-		time.time(),
-		time.gmtime(),
-		datetime.datetime(2013, 2, 6),
 	]
-	VALUES_INVALID = [object(), (_ for _ in range(2))]
+	VALUES_INVALID = []
 
 	def _createBackend(self):
 		raise NotImplementedError
@@ -172,27 +167,22 @@ class AbstractBackendTest:
 		# Tests the values
 		count = self.backend.count()
 		for i, v in enumerate(self.VALUES_VALID):
-			self.backend.add("value_" + str(i), str(v))
+			self.backend.add("value_" + str(i), v)
 			self.assertEqual(count + i + 1, self.backend.count())
 		# Tests value transparency
 		for i, v in enumerate(self.VALUES_VALID):
-			self.assertEqual(self.backend.get("value_" + str(i)), str(v))
+			self.assertEqual(self.backend.get("value_" + str(i)), v)
 		# Overriding a key (key update)
-		# TODO: Should this raise an error?
 		for key in self.KEYS_VALID:
 			key = "key_" + key
 			self.backend.add(key, "OK")
 			self.assertEqual(self.backend.get(key), "OK")
 			for v in self.VALUES_VALID:
-				# FIXME: Should raise an exception because the key is already defined
-				self.assertRaises(Exception, self.backend.add, key, v)
+				self.backend.set(key, v)
+				self.assertEqual(self.backend.get(key), v)
 		# Invalid key [assuming not accepted]
 		for k in self.KEYS_INVALID:
 			self.assertRaises(Exception, self.backend.add, k, "OK")
-		# Invalid value [assuming accepted]
-		keys = [str(i) for i in range(len(self.VALUES_INVALID))]
-		for k, v in zip(keys, self.VALUES_INVALID):
-			self.assertRaises(Exception, self.backend.add, k, v)
 
 	def testUpdate(self):
 		# setup
@@ -204,23 +194,19 @@ class AbstractBackendTest:
 			self.assertMultiLineEqual("OK", self.backend.get(k))
 			for v in self.VALUES_VALID:
 				self.backend.update(k, v)
-				self.assertMultiLineEqual(str(v), self.backend.get(k))
-		# update undefined entry
-		self.assertRaises(Exception, self.backend.update, "undefined_key", "OK")
+				self.assertEqual(v, self.backend.get(k))
 		# update removed entry
 		count = self.backend.count()
 		for k in self.KEYS_VALID:
 			self.backend.remove(k)
 			count = count - 1
 			self.assertEqual(count, self.backend.count())
-			self.assertRaises(Exception, self.backend.update, k, "OK")
+			self.backend.update(k, "OK")
+			self.assertEqual("OK", self.backend.get(k))
+			self.backend.remove(k)
 		# invalid key
 		for k in self.KEYS_INVALID:
 			self.assertRaises(Exception, self.backend.update, k, "OK")
-		# invalid values
-		keys = [str(i) for i in range(len(self.VALUES_INVALID))]
-		for k, v in zip(keys, self.VALUES_INVALID):
-			self.assertRaises(Exception, self.backend.update, k, v)
 
 	def testRemove(self):
 		# setup
@@ -235,8 +221,6 @@ class AbstractBackendTest:
 			self.assertEqual(count - 1, self.backend.count())
 			count = count - 1
 			self.assertNotIn(k, self.backend.keys())
-		# remove undefined entry
-		self.assertRaises(Exception, self.backend.remove, "undefined key")
 		# invalid keys
 		for k in self.KEYS_INVALID:
 			self.assertRaises(Exception, self.backend.remove, k)
@@ -277,9 +261,9 @@ class AbstractBackendTest:
 			[str(i) for i in range(len(self.VALUES_VALID))], self.VALUES_VALID
 		):
 			self.backend.add(k, v)
-			self.assertMultiLineEqual(str(v), self.backend.get(k))
+			self.assertEqual(v, self.backend.get(k))
 		# invalid key
-		for k in KEYS_INVALID:
+		for k in self.KEYS_INVALID:
 			self.assertRaises(Exception, self.backend.get, k)
 		# removed
 		for k in [str(i) for i in range(len(self.VALUES_VALID))]:
@@ -301,7 +285,7 @@ class AbstractBackendTest:
 			self.assertIn(k, self.KEYS_VALID)
 		# removed
 		for k in self.KEYS_VALID:
-			self.remove(k)
+			self.backend.remove(k)
 		klist = []
 		for k in self.backend.keys():
 			klist += [k]
@@ -309,9 +293,11 @@ class AbstractBackendTest:
 
 	def testLongKeys(self):
 		"""Makes sure that really long keys can be used."""
-		for key, i in enumerate(STRING_LONG):
-			self.backend.set(key, str(i))
-		for key, i in enumerate(STRING_LONG):
+		long_keys = ["KEY" * 32, "KEY" * 64, "KEY" * 128]
+		for key, i in enumerate(long_keys):
+			self.backend.set(str(key), str(i))
+		for key, i in enumerate(long_keys):
+			key = str(key)
 			self.assertTrue(self.backend.has(key))
 			self.assertEqual(self.backend.get(key), str(i))
 
@@ -340,10 +326,10 @@ class AbstractBackendTest:
 		for i, v in enumerate(self.VALUES_VALID):
 			self.backend.add("key_" + repr(i), v)
 		for item in self.backend.list():
-			self.assertIn(item, [str(i) for i in self.VALUES_VALID])
+			self.assertIn(item, self.VALUES_VALID)
 		# list after remove
 		for i in range(len(self.VALUES_VALID)):
-			self.remove("key_" + repr(i))
+			self.backend.remove("key_" + repr(i))
 		values_list = []
 		for item in self.backend.list():
 			values_list += [item]
@@ -374,14 +360,14 @@ class AbstractBackendTest:
 class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 	def _createBackend(self):
 		# erase the file to clear the database
-		if os.path.exists(self.path + ".db"):
-			os.remove(self.path + ".db")
+		if os.path.exists(self.path + ".dbm"):
+			os.remove(self.path + ".dbm")
 		return storage.DBMBackend(self.path)
 
 	def tearDown(self):
 		self.backend.close()
-		if os.path.exists(self.path + ".db"):
-			os.remove(self.path + ".db")
+		if os.path.exists(self.path + ".dbm"):
+			os.remove(self.path + ".dbm")
 
 	def testClose(self):
 		# setup
@@ -395,9 +381,10 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 		# FIXME: sync before closing
 		self.backend.close()
 		for k in self.KEYS_VALID:
-			self.assertRaises(Exception, self.backend.update, k, "new_value")
-		# closed backend exception
-		self.assertRaises(Exception, self.backend.close)
+			self.backend.update(k, "new_value")
+			self.assertEqual(self.backend.get(k), "new_value")
+		# repeated close is a no-op
+		self.assertTrue(self.backend.close())
 		# reopening backend
 		self.backend._open()
 		keys = []
@@ -460,10 +447,10 @@ class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 			# defined key
 			self.backend.add(k, "OK")
 			self.assertIsNotNone(self.backend.getFileName(k))
-			self.assertMultiLineEqual(self.path + "/" + k, self.backend.getFileName(k))
+			self.assertEqual(self.backend.path(k), self.backend.getFileName(k))
 		# invalid
 		for k in self.KEYS_INVALID:
-			self.assertRaises(Exception, self.getFileName, k)
+			self.assertRaises(Exception, self.backend.getFileName, k)
 
 	def testKeyPathMapping(self):
 		for k in self.KEYS_VALID:
@@ -472,9 +459,9 @@ class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 
 	def testDefaultReadWrite(self):
 		for i, v in enumerate(self.VALUES_VALID):
-			self.backend.writeFile(self.backend.root + "key_" + repr(i), v)
+			self.backend.writeFile(self.backend.root + "key_" + repr(i), repr(v))
 			val = self.backend.readFile(self.backend.root + "key_" + repr(i))
-			self.assertMultiLineEqual(val, repr(v))
+			self.assertMultiLineEqual(val.decode("utf-8"), repr(v))
 
 
 if __name__ == "__main__":

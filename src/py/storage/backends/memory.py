@@ -6,7 +6,7 @@ class MemoryBackend(StorageBackend):
 	to JSON while values are kept as-is."""
 
 	def __init__(self):
-		super().__init__(self)
+		super().__init__()
 		self.values = {}
 
 	def add(self, key, data):

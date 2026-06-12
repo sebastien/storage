@@ -1,9 +1,8 @@
-# FROM: http://code.activestate.com/recipes/576375-low-level-inotify-wrapper/
-"""
-Low level inotify wrapper
-"""
+"""Low-level inotify wrapper and flag helpers."""
 
-from os import read, close
+# FROM: http://code.activestate.com/recipes/576375-low-level-inotify-wrapper/
+
+from os import close
 from struct import unpack
 from fcntl import ioctl
 from termios import FIONREAD
@@ -13,6 +12,13 @@ from errno import errorcode
 
 libc = cdll.LoadLibrary("libc.so.6")
 libc.__errno_location.restype = POINTER(c_int)
+
+
+# -----------------------------------------------------------------------------
+#
+# LOW-LEVEL WRAPPER
+#
+# -----------------------------------------------------------------------------
 
 
 def geterr():
@@ -59,6 +65,13 @@ class Inotify(object):
 		close(self.fd)
 
 
+# -----------------------------------------------------------------------------
+#
+# FLAGS
+#
+# -----------------------------------------------------------------------------
+
+
 FLAGS = {
 	"ACCESS": 0x00000001,  # IN_ACCESS
 	"MODIFY": 0x00000002,  # IN_MODIFY
@@ -83,5 +96,26 @@ FLAGS = {
 }
 
 
+# -----------------------------------------------------------------------------
+#
+# HELPERS
+#
+# -----------------------------------------------------------------------------
+
+
 def mask_str(mask):
 	return " | ".join(name for name, val in list(FLAGS.items()) if val & mask)
+
+
+# -----------------------------------------------------------------------------
+#
+# PUBLIC API
+#
+# -----------------------------------------------------------------------------
+
+__all__ = [
+	"FLAGS",
+	"Inotify",
+	"geterr",
+	"mask_str",
+]

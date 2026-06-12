@@ -1,15 +1,23 @@
-import types
-import weakref
-import threading
-import io
+"""Raw binary storage model and runtime.
+
+This module groups two closely related concerns:
+
+- `StoredRaw` for raw payloads plus metadata
+- `RawStorage` for persisting metadata and data streams
+"""
+
 import base64
+import io
+import threading
+import weakref
+
 from .core import (
-	Storable,
 	Identifier,
+	NOTHING,
+	Storable,
+	asPrimitive,
 	getCanonicalName,
 	getTimestamp,
-	asPrimitive,
-	NOTHING,
 )
 
 # FIXME: Should be much closer to stored object, with a similar API. meta
@@ -29,13 +37,20 @@ from .core import (
 
 __pychecker__ = "unusednames=options"
 
-__doc__ = """\
-Allows to store raw data and its meta-information
-"""
+# -----------------------------------------------------------------------------
+#
+# STORAGE UTILITIES
+#
+# -----------------------------------------------------------------------------
+
+
+def _coerceCacheKey(rawOrKey):
+	return rawOrKey.id if isinstance(rawOrKey, StoredRaw) else rawOrKey
+
 
 # -----------------------------------------------------------------------------
 #
-# STORED RAW
+# STORED RAW MODEL
 #
 # -----------------------------------------------------------------------------
 
@@ -51,16 +66,23 @@ Allows to store raw data and its meta-information
 
 
 class StoredRaw(Storable):
-	OID_GENERATOR = Identifier.Stamp
-	OID_PREFIX = None
-	RESERVED = ("type", "oid", "updates")
+	ID_GENERATOR = Identifier.Stamp
+	ID_PREFIX = None
+	RESERVED = ("type", "id", "revision", "updates")
 	COLLECTION = None
 	STORAGE = None
 
 	@classmethod
-	def GenerateOID(cls):
-		oid = cls.OID_GENERATOR()
-		return f"{cls.OID_PREFIX}-{oid}" if cls.OID_PREFIX else oid
+	def _ensureStorage(cls):
+		assert cls.STORAGE, (
+			"Class has not been registered in an RawStorage yet: %s" % (cls)
+		)
+		return cls.STORAGE
+
+	@classmethod
+	def GenerateID(cls):
+		id = cls.ID_GENERATOR()
+		return f"{cls.ID_PREFIX}-{id}" if cls.ID_PREFIX else id
 
 	@classmethod
 	def Import(cls, meta, data=None, updateProperties=False):
@@ -70,11 +92,11 @@ class StoredRaw(Storable):
 			)
 			assert isinstance(meta, cls), "Expected class %s, got %s" % (
 				cls,
-				properties.__class__,
+				meta.__class__,
 			)
 			return meta
 		else:
-			oid = meta.get("oid")
+			id = meta.get("id")
 			# We makre sure to extract the data and remove it from meta if provided
 			# (which might happend in the stored raw is exported with its data)
 			data = meta.get("data") if data is None else None
@@ -82,9 +104,9 @@ class StoredRaw(Storable):
 				data = base64.b64decode(data)
 				meta = dict(((k, v) for k, v in list(meta.items()) if k != "data"))
 			# If there is an object ID (and we're supposed to get it)
-			if oid:
+			if id:
 				# We look in the storage for this specific object
-				obj = cls.Get(oid)
+				obj = cls.Get(id)
 				# If it exists, we update its properties
 				if obj:
 					# FIXME: I don't see the use case for an `updateProperties`, but am
@@ -94,10 +116,10 @@ class StoredRaw(Storable):
 					# most up to date.if updateProperties:
 					for key, value in list(meta.items()):
 						# NOTE: We manage reserved properites at this level
-						if key == "type" or key == "oid":
+						if key == "type" or key == "id":
 							continue
-						elif key == "updates":
-							obj._updates = value
+						elif key in ("revision", "updates"):
+							obj._revision = value
 						else:
 							obj.meta(key, value)
 					return obj
@@ -108,63 +130,46 @@ class StoredRaw(Storable):
 				return cls(data, **(meta or {}))
 
 	@classmethod
-	def Has(cls, oid):
-		assert cls.STORAGE, (
-			"Class has not been registered in an RawStorage yet: %s for object %s"
-			% (
-				cls,
-				oid,
-			)
-		)
-		if oid is None:
+	def Has(cls, id):
+		if id is None:
 			return False
-		return cls.STORAGE.has(cls.StorageKey(oid))
+		return cls._ensureStorage().has(cls.StorageKey(id))
 
 	@classmethod
-	def Get(cls, oid):
-		assert cls.STORAGE, (
-			"Class has not been registered in an RawStorage yet: %s for object %s"
-			% (
-				cls,
-				oid,
-			)
-		)
-		if oid is None:
+	def Get(cls, id):
+		if id is None:
 			return None
-		return cls.STORAGE.get(cls.StorageKey(oid))
+		return cls._ensureStorage().get(cls.StorageKey(id))
 
 	@classmethod
-	def Ensure(cls, oid):
-		res = cls.Get(oid)
+	def Ensure(cls, id):
+		res = cls.Get(id)
 		if res is None:
-			res = cls(oid=oid)
+			res = cls(id=id)
 		return res
 
 	@classmethod
 	def Count(cls):
-		assert cls.STORAGE, (
-			"Class has not been registered in an ObjectStorage yet: %s" % (cls)
-		)
-		return cls.STORAGE.count(cls)
+		return cls._ensureStorage().count(cls)
 
 	@classmethod
 	def List(cls, count=-1, start=0, end=None):
-		return cls.STORAGE.list(count, start, end, types=cls)
+		return cls._ensureStorage().list(count, start, end, types=cls)
 
 	@classmethod
 	def All(cls, count=-1, start=0, end=None):
 		return cls.List()
 
 	@classmethod
-	def StorageKey(cls, oid):
-		"""Returns the storage key associated with the given oid of this class."""
-		if isinstance(oid, StoredRaw):
-			oid = oid.oid
+	def StorageKey(cls, id):
+		"""Returns the storage key associated with the given id of this class."""
+		if isinstance(id, StoredRaw):
+			id = id.id
 		if cls.COLLECTION:
-			return str(cls.COLLECTION) + "." + str(oid)
+			return str(cls.COLLECTION) + "." + str(id)
 		else:
 			cls.COLLECTION = cls.__name__.split(".")[-1]
-			return cls.StorageKey(oid)
+			return cls.StorageKey(id)
 
 	@classmethod
 	def StoragePrefix(cls):
@@ -175,28 +180,25 @@ class StoredRaw(Storable):
 		return cls.COLLECTION
 
 	def __init__(self, data=None, restored=False, **meta):
-		if "oid" in meta:
-			self.oid = meta["oid"]
+		if "id" in meta:
+			self.id = meta["id"]
 		else:
-			self.oid = self.GenerateOID()
+			self.id = self.GenerateID()
 		self._meta = {}
 		self._hasDataChanged = True
 		self._data = data
-		self._updates = {}
+		self._revision = {}
 		if data is None:
 			self._hasDataChanged = False
 		for k in meta:
 			if k not in self.RESERVED:
 				self._meta[k] = meta[k]
-		if meta and "updates" in meta:
-			self._updates.update(meta.get("updates"))
-		if "oid" not in self._updates:
-			self._updates["oid"] = 0
+		if meta:
+			self._revision.update(meta.get("revision") or meta.get("updates") or {})
+		if "id" not in self._revision:
+			self._revision["id"] = getTimestamp()
 		if self.STORAGE:
 			self.STORAGE.register(self, restored=restored)
-
-	def getID(self):
-		return self.oid
 
 	def remove(self):
 		self.STORAGE.remove(self)
@@ -219,7 +221,7 @@ class StoredRaw(Storable):
 			# We force closing file-like objects once the backend has persisted them.
 			try:
 				self._data.close()
-			except:
+			except Exception:
 				pass
 			self._data = None
 		self._hasDataChanged = False
@@ -228,9 +230,9 @@ class StoredRaw(Storable):
 		self._data = data
 		self._hasDataChanged = True
 		# FIXME: Not sure what to do with timestamp
-		self._updates["data"] = self._updates["oid"] = max(
+		self._revision["data"] = self._revision["id"] = max(
 			getTimestamp() if timestamp is None else timestamp,
-			self._updates.get("data", -1),
+			self._revision.get("data", -1),
 		)
 		return self
 
@@ -243,9 +245,9 @@ class StoredRaw(Storable):
 				self._meta[k] = options[k]
 		# FIXME: Not sure what to do with timestamp
 		timestamp = None
-		self._updates["meta"] = self._updates["oid"] = max(
+		self._revision["meta"] = self._revision["id"] = max(
 			getTimestamp() if timestamp is None else timestamp,
-			self._updates.get("meta", -1),
+			self._revision.get("meta", -1),
 		)
 		return self
 
@@ -253,11 +255,11 @@ class StoredRaw(Storable):
 		self.meta = {}
 		return self
 
-	def getUpdateTime(self, key="oid"):
+	def getUpdateTime(self, key="id"):
 		"""Returns the time at with the given object (or key) was updated. The time
 		is returned as a storage timestamp."""
-		if self._updates:
-			return self._updates.get(key, 0)
+		if self._revision:
+			return self._revision.get(key, 0)
 		else:
 			return 0
 
@@ -327,9 +329,9 @@ class StoredRaw(Storable):
 		# SEE: http://stackoverflow.com/questions/1379934/large-numbers-erroneously-rounded-in-javascript
 		# We cannot allow IDs to be long numbers...
 		res = dict(
-			oid=str(self.oid),
+			id=str(self.id),
 			type=self.getTypeName(),
-			updates=self._updates,
+			revision=self._revision,
 		)
 		if depth > 0:
 			res.update(self._meta)
@@ -343,16 +345,15 @@ class StoredRaw(Storable):
 		return getCanonicalName(self.__class__)
 
 	def save(self):
-		assert self.STORAGE, "StoredRaw must have storage"
-		self.STORAGE.update(self)
+		self._ensureStorage().update(self)
 
 	def __repr__(self):
-		return "<raw:%s %s:%s>" % (self.__class__.__name__, id(self), self.oid)
+		return "<raw:%s %s:%s>" % (self.__class__.__name__, id(self), self.id)
 
 
 # -----------------------------------------------------------------------------
 #
-# RAW STORAGE
+# RAW STORAGE RUNTIME
 #
 # -----------------------------------------------------------------------------
 
@@ -374,7 +375,7 @@ class RawStorage:
 		to be successful, even before the object is actually stored in the db."""
 		assert isinstance(storedRaw, StoredRaw), "Only stored raw can be registered"
 		self.lock.acquire()
-		key = storedRaw.oid
+		key = storedRaw.id
 		self._cache[key] = storedRaw
 		self.lock.release()
 		return self
@@ -395,12 +396,12 @@ class RawStorage:
 
 	def getStorageKeys(self, storedRawOrKey):
 		if isinstance(storedRawOrKey, StoredRaw):
-			key = storedRawOrKey.oid
+			key = storedRawOrKey.id
 			prefix = self._classPrefix.get(storedRawOrKey.__class__)
 			if not prefix:
 				prefix = storedRawOrKey.__class__.__name__.split(".")[-1]
 				self._classPrefix[storedRawOrKey.__class__] = prefix
-			key = str(prefix) + "." + str(storedRawOrKey.oid)
+			key = str(prefix) + "." + str(storedRawOrKey.id)
 		else:
 			key = storedRawOrKey
 		key_data = key + self.DATA_SUFFIX
@@ -411,7 +412,7 @@ class RawStorage:
 		key_meta, key_data = self.getStorageKeys(storedRaw)
 		assert storedRaw.hasStorage()
 		assert storedRaw.STORAGE == self, "StoredRaw stored in a different storage"
-		assert storedRaw.oid in self._cache, "StoredRaw should be already in cache"
+		assert storedRaw.id in self._cache, "StoredRaw should be already in cache"
 		# NOTE: We MUST make sure that there is something saved for the key_meta,
 		# event when there's no meta data, as otherwise the object won't appear
 		# as saved.
@@ -435,8 +436,8 @@ class RawStorage:
 			meta.setStorage(self)
 			return meta
 		else:
-			if meta["oid"] in self._cache:
-				res = self._cache[meta["oid"]]
+			if meta["id"] in self._cache:
+				res = self._cache[meta["id"]]
 				# FIXME: This should be a merge, as we don't know for sure which
 				# version is the most up-to-date
 				res.meta(meta)
@@ -456,11 +457,7 @@ class RawStorage:
 		return res
 
 	def get(self, keyOrStoredRaw):
-		cache_key = (
-			keyOrStoredRaw.oid
-			if isinstance(keyOrStoredRaw, StoredRaw)
-			else keyOrStoredRaw
-		)
+		cache_key = _coerceCacheKey(keyOrStoredRaw)
 		# We look in the cache first
 		if cache_key in self._cache:
 			return self._cache[cache_key]
@@ -481,11 +478,7 @@ class RawStorage:
 				return None
 
 	def has(self, keyOrStoredRaw):
-		cache_key = (
-			keyOrStoredRaw.oid
-			if isinstance(keyOrStoredRaw, StoredRaw)
-			else keyOrStoredRaw
-		)
+		cache_key = _coerceCacheKey(keyOrStoredRaw)
 		# We look in the cache first
 		if cache_key in self._cache:
 			return self._cache[cache_key]
@@ -497,11 +490,7 @@ class RawStorage:
 		key_meta, key_data = self.getStorageKeys(keyOrStoredRaw)
 		self.backend.remove(key_meta)
 		self.backend.remove(key_data)
-		cache_key = (
-			keyOrStoredRaw.oid
-			if isinstance(keyOrStoredRaw, StoredRaw)
-			else keyOrStoredRaw
-		)
+		cache_key = _coerceCacheKey(keyOrStoredRaw)
 		if cache_key in self._cache:
 			del self._cache[cache_key]
 		return self
@@ -520,7 +509,7 @@ class RawStorage:
 		# 	if self.backend.has(key_meta):
 		# 		meta = self.deserializeMeta(self.backend.get(key_meta)),
 		# 		dataless_raw = self.restore(meta=meta)
-		# 		if dataless_raw.oid == oid:
+		# 		if dataless_raw.id == id:
 		# 			yield dataless_raw
 
 	def keys(self, types=None):
@@ -590,6 +579,18 @@ class RawStorage:
 				types = (types,)
 			prefix = [_.StoragePrefix() for _ in types]
 		return prefix
+
+
+# -----------------------------------------------------------------------------
+#
+# PUBLIC API
+#
+# -----------------------------------------------------------------------------
+
+__all__ = [
+	"RawStorage",
+	"StoredRaw",
+]
 
 
 # EOF - vim: tw=80 ts=4 sw=4 noet

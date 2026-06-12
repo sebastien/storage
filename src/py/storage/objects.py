@@ -1,38 +1,35 @@
-import time, threading, json, weakref, types, datetime, traceback, inspect
-from typing import ClassVar, Self, Callable, Optional, Iterator, Any, List, Type
+"""Object persistence model and storage runtime.
+
+This module groups three closely related concerns:
+
+- stored object declarations and lifecycle
+- lazy property and relation access
+- object storage backed by key-value backends
+
+The main public API is `StoredObject` and `ObjectStorage`.
+"""
+
+import inspect
+import threading
+import traceback
+import weakref
+from typing import Any, Callable, ClassVar, Iterator, List, Optional, Self, Type
+
 from .backends import StorageBackend
-from .index import Index
-from .utils import atomic, TPrimitive
 from .core import (
 	Storable,
 	Identifier,
-	getCanonicalName,
-	asPrimitive,
 	asJSON,
-	restore,
-	isSame,
+	asPrimitive,
+	getCanonicalName,
 	getTimestamp,
+	isSame,
+	restore,
 )
+from .index import Index
+from .utils import TPrimitive, atomic
 
 # TODO: Do some garbage-collection in the cache or use weak-references
-
-__doc__ = """
-
-This module provides is a model for object persistence in composable storage
-backend (memory, journal, file, directory and MongoDB). The main interface
-ensures that you'll always get the same physical object for a specific key --
-this comes to the price of maintaining a runtime cache of the objects stored in
-the database.
-
-Rules:
-
- - Never directly store reference to StoredObject, instead store the 'oid'
-   and restore it on 'onRestore' (or when it is invoked).
-
- - Try to have compact, simple representation of your stored objects, so they
-   don't take too much space and can be easily exported to JSON.
-
-"""
 
 # FIXME: Relations should be exported as shallow by default (objects can change)
 # The problem is that sometimes the objects have changed, or might even have
@@ -61,19 +58,32 @@ Rules:
 
 # TODO: Use JSON-patch to record history of changes
 
+
 # -----------------------------------------------------------------------------
 #
-# STORED OBJECT
+# ACCESS UTILITIES
 #
 # -----------------------------------------------------------------------------
 
+
+def _resolveAccessor(storedObject, prefix: str, name: str):
+	cap_name = name[0].upper() + name[1:]
+	accessor_name = prefix + cap_name
+	return getattr(storedObject, accessor_name) if hasattr(storedObject, accessor_name) else None
+
+
+# -----------------------------------------------------------------------------
+#
+# STORED OBJECT MODEL
+#
+# -----------------------------------------------------------------------------
 
 # FIXME: StoredObject should have a locked revision counter that allows to
 # compare snapshots
 # NOTE: StoredObjects are designed to be pickleable and jsonable
 class StoredObject(Storable):
 	"""Stored objects provides an abstraction for storing objects in an
-	ObjectStorage. Each object has an `oid` (object id) which is unique for
+	ObjectStorage. Each object has an `id` (object id) which is unique for
 	its type.
 
 	The actual key used to store the object in the object storage
@@ -85,16 +95,24 @@ class StoredObject(Storable):
 	a storage proxy that implements you specific strategy.
 	"""
 
-	OID_GENERATOR: ClassVar[Callable[[], str | int]] = Identifier.OID
-	OID_PREFIX: ClassVar[Optional[str]] = None
+	ID_GENERATOR: ClassVar[Callable[[], str | int]] = Identifier.ID
+	ID_PREFIX: ClassVar[Optional[str]] = None
 	SKIP_EXTRA_PROPERTIES: ClassVar[bool] = False
 	COLLECTION = None
 	STORAGE: ClassVar[Optional["ObjectStorage"]] = None
 	PROPERTIES: ClassVar[dict[str, Any]] = {}
 	COMPUTED_PROPERTIES: ClassVar[list[str]] = []
 	RELATIONS: ClassVar[dict[str, Type["StoredObject"]]] = {}
-	RESERVED: ClassVar[list[str]] = ["type", "oid", "updates"]
+	RESERVED: ClassVar[list[str]] = ["type", "id", "revision", "updates"]
 	INDEXES: ClassVar[list[Index]] = []
+
+	@classmethod
+	def _ensureStorage(cls) -> "ObjectStorage":
+		if not cls.STORAGE:
+			raise RuntimeError(
+				f"Class has not been registered in an ObjectStorage yet: {cls}"
+			)
+		return cls.STORAGE
 
 	@classmethod
 	def Recognizes(cls, data: Any) -> bool:
@@ -108,6 +126,8 @@ class StoredObject(Storable):
 
 	@classmethod
 	def AddIndex(cls, index: Index):
+		if "INDEXES" not in cls.__dict__:
+			cls.INDEXES = list(cls.INDEXES)
 		if index not in cls.INDEXES:
 			cls.INDEXES.append(index)
 		return cls
@@ -126,94 +146,72 @@ class StoredObject(Storable):
 		return (indexes, objects)
 
 	@classmethod
-	def GenerateOID(cls):
+	def GenerateID(cls):
 		"""Generates a new object ID for this class"""
-		oid = cls.OID_GENERATOR()
-		return f"{cls.OID_PREFIX}-{oid}" if cls.OID_PREFIX else oid
+		id = cls.ID_GENERATOR()
+		return f"{cls.ID_PREFIX}-{id}" if cls.ID_PREFIX else id
 
 	@classmethod
 	def All(cls, since=None) -> Iterator["StoredObject"]:
 		"""Iterates on all the objects of this type in the storage."""
-		if not cls.STORAGE:
-			raise RuntimeError(
-				f"Class has not been registered in an ObjectStorage yet: {cls}"
-			)
+		storage = cls._ensureStorage()
 		for storage_id in cls.Keys():
-			obj = cls.STORAGE.get(storage_id)
+			obj = storage.get(storage_id)
 			if obj and (since is None or since < obj.getUpdateTime()):
 				yield obj
 
 	@classmethod
 	def Keys(cls, prefix=None) -> Iterator[str]:
 		"""List all the keys for objects of this type in the storage."""
-		if not cls.STORAGE:
-			raise RuntimeError(
-				f"Class has not been registered in an ObjectStorage yet: {cls}"
-			)
-		return cls.STORAGE.keys(cls, prefix=prefix)
+		return cls._ensureStorage().keys(cls, prefix=prefix)
 
 	# NOTE: We should return Non when the object does not exist, and provide
 	# an Ensure method that will create the object if necessary.
 	@classmethod
 	def Get(
-		cls, oid: Optional[str] = None, key: Optional[str] = None
+		cls, id: Optional[str] = None, key: Optional[str] = None
 	) -> Optional["StoredObject"]:
 		"""Returns the instance associated with the given Object ID, if any"""
-		if not cls.STORAGE:
-			raise RuntimeError(
-				f"Class has not been registered in an ObjectStorage yet: {cls}"
-			)
-		if oid is None and key is None:
+		storage = cls._ensureStorage()
+		if id is None and key is None:
 			return None
-		return cls.STORAGE.get(cls.StorageKey(oid) if key is None else key)
+		return storage.get(cls.StorageKey(id) if key is None else key)
 
 	@classmethod
 	def Count(cls) -> int:
 		"""Returns the count of objects of this type stored in the storage."""
-		if not cls.STORAGE:
-			raise RuntimeError(
-				f"Class has not been registered in an ObjectStorage yet: {cls}"
-			)
-		return cls.STORAGE.count(cls)
+		return cls._ensureStorage().count(cls)
 
 	@classmethod
 	def List(cls, count: int = -1, start: int = 0, end: Optional[int] = None):
 		"""Returns the list of objects of this type stored in the storage."""
-		if not cls.STORAGE:
-			raise RuntimeError(
-				f"Class has not been registered in an ObjectStorage yet: {cls}"
-			)
-		return cls.STORAGE.list(cls, count, start, end)
+		return cls._ensureStorage().list(cls, count, start, end)
 
 	@classmethod
-	def Has(cls, oid: str) -> bool:
+	def Has(cls, id: str) -> bool:
 		"""Tells if there is an object stored with the given object id."""
-		if not cls.STORAGE:
-			raise RuntimeError(
-				f"Class has not been registered in an ObjectStorage yet: {cls}"
-			)
-		return cls.STORAGE.has(cls.StorageKey(oid))
+		return cls._ensureStorage().has(cls.StorageKey(id))
 
 	@classmethod
-	def Ensure(cls, oid):
+	def Ensure(cls, id):
 		"""Ensures that there is an object with the given object id in the
 		storage. If not, it will create a new instance of this specific
 		stored object sub-class"""
-		res = cls.Get(oid)
+		res = cls.Get(id)
 		if res is None:
-			res = cls(oid)
+			res = cls(id)
 		return res
 
 	@classmethod
-	def StorageKey(cls, oid):
-		"""Returns the storage key associated with the given oid of this class."""
-		if isinstance(oid, StoredObject):
-			oid = oid.oid
+	def StorageKey(cls, id):
+		"""Returns the storage key associated with the given id of this class."""
+		if isinstance(id, StoredObject):
+			id = id.id
 		if cls.COLLECTION:
-			return str(cls.COLLECTION) + "." + str(oid)
+			return str(cls.COLLECTION) + "." + str(id)
 		else:
 			cls.COLLECTION = cls.__name__.split(".")[-1]
-			return cls.StorageKey(oid)
+			return cls.StorageKey(id)
 
 	@classmethod
 	def StoragePrefix(cls):
@@ -238,15 +236,15 @@ class StoredObject(Storable):
 			)
 			return properties
 		else:
-			oid = properties.get("oid")
+			id = properties.get("id")
 			otype = properties.get("type")
 			assert not otype or otype == getCanonicalName(cls), (
 				"Expected type %s, got %s" % (getCanonicalName(cls), otype)
 			)
 			# If there is an object ID
-			if oid:
+			if id:
 				# We look in the storage for this specific object
-				obj = cls.Get(oid)
+				obj = cls.Get(id)
 				# If it exists, we update its properties
 				if obj:
 					# FIXME: I don't see the use case for an `updateProperties`, but am
@@ -268,17 +266,16 @@ class StoredObject(Storable):
 				)
 
 	@classmethod
-	def Export(cls, oid, **options):
+	def Export(cls, id, **options):
 		"""A convenient fonction that will return the full object corresponding
-		to the oid if it is in base, or will return a stripped down version with
-		oid and class."""
-		if not cls.STORAGE:
-			raise RuntimeError("Object not bound to a storage")
-		o = cls.STORAGE.get(cls.StorageKey(oid))
+		to the id if it is in base, or will return a stripped down version with
+		id and class."""
+		storage = cls._ensureStorage()
+		o = storage.get(cls.StorageKey(id))
 		if o:
 			return o.export(**options)
 		else:
-			return {"oid": oid, "type": getCanonicalName(cls)}
+			return {"id": id, "type": getCanonicalName(cls)}
 
 	HAS_DESCRIPTORS = False
 
@@ -299,9 +296,9 @@ class StoredObject(Storable):
 		# NOTE: We have to pass an instance, as otherwise we'll get the
 		# following exception:
 		# TypeError: unbound method <lambda>() must be called with Tutorial instance as first argument (got type instance instead)
-		if type(cls.PROPERTIES) != dict:
+		if not isinstance(cls.PROPERTIES, dict):
 			cls.PROPERTIES = cls.PROPERTIES(instance)
-		if type(cls.RELATIONS) != dict:
+		if not isinstance(cls.RELATIONS, dict):
 			cls.RELATIONS = cls.RELATIONS(instance)
 		for _ in cls.PROPERTIES:
 			setattr(cls, _, PropertyDescriptor(_))
@@ -312,41 +309,41 @@ class StoredObject(Storable):
 
 	def __init__(
 		self,
-		oid=None,
+		id=None,
 		properties=None,
 		restored=False,
 		skipExtraProperties=None,
 		**kwargs,
 	):
-		"""Creates a new stored object instance with the given oid. If none is given, then a new oid will be generated."""  # If the oid is not directly given, it might be listed in the properties
+		"""Creates a new stored object instance with the given id. If none is given, then a new id will be generated."""  # If the id is not directly given, it might be listed in the properties
 		if skipExtraProperties is None:
 			skipExtraProperties = self.SKIP_EXTRA_PROPERTIES
-		if oid is None and properties:
-			oid = properties.get("oid")
-		# If we really can't find an oid, we generate a new one
-		if oid is None:
-			self.oid = self.GenerateOID()
+		if id is None and properties:
+			id = properties.get("id")
+		# If we really can't find an id, we generate a new one
+		if id is None:
+			self.id = self.GenerateID()
 		else:
-			self.oid = oid
+			self.id = id
 		self.storage = self.STORAGE
 		if not self.__class__.HAS_DESCRIPTORS:
 			self.__class__._GenerateDescriptors(self)
 		self._properties = {}
 		self._relations = {}
-		self._updates = {}
+		self._revision = {}
 		self._isNew = restored
 		self.set(properties, skipExtraProperties=skipExtraProperties)
 		self.set(kwargs, skipExtraProperties=skipExtraProperties)
-		# We make sure updates are updated first
-		if properties and "updates" in properties:
-			self._updates.update(properties.get("updates"))
-		if kwargs and "updates" in kwargs:
-			self._updates.update(kwargs.get("updates"))
+		# We make sure revision is updated first.
+		if properties:
+			self._revision.update(properties.get("revision") or properties.get("updates") or {})
+		if kwargs:
+			self._revision.update(kwargs.get("revision") or kwargs.get("updates") or {})
 		if self.STORAGE:
 			self.STORAGE.register(self, restored=restored)
 		# We make sure that there's a timestamp for the object, we default it to 0
-		if "oid" not in self._updates:
-			self._updates["oid"] = 0
+		if "id" not in self._revision:
+			self._revision["id"] = getTimestamp()
 		# FIXME: Should we make sure that the object had updates for everything?
 		assert self.getStorageKey(), "Object must have a key once created"
 		self.init()
@@ -369,11 +366,10 @@ class StoredObject(Storable):
 				elif name in self.RELATIONS:
 					self.setRelation(name, value, timestamp)
 				elif name in self.RESERVED:
-					if name == "updates":
-						# If the reserved keyword is "updates", we refresh the updates
+					if name in ("revision", "updates"):
 						for k in value:
-							self._updates[k] = max(
-								value.get(k, -1), self._updates.get(k, -1)
+							self._revision[k] = max(
+								value.get(k, -1), self._revision.get(k, -1)
 							)
 				elif name in self.COMPUTED_PROPERTIES:
 					pass
@@ -401,11 +397,11 @@ class StoredObject(Storable):
 			raise ValueError(f"StoredObject does not define property {name}: {self}")
 		new_value = p.set(value)
 		if not self._isNew and old_value != new_value:
-			# We update the `updates` map only if the object is not new (has
+			# We update the `revision` map only if the object is not new (has
 			# been registered)
-			self._updates[name] = self._updates["oid"] = max(
+			self._revision[name] = self._revision["id"] = max(
 				getTimestamp() if timestamp is None else timestamp,
-				self._updates.get(name, -1),
+				self._revision.get(name, -1),
 			)
 		return self
 
@@ -417,15 +413,15 @@ class StoredObject(Storable):
 			name,
 			list(self.PROPERTIES.keys()) + list(self.RELATIONS.keys()),
 		)
-		if not name in self._relations:
+		if name not in self._relations:
 			self._relations[name] = Relation(self.__class__, self.RELATIONS[name])
 		self._relations[name].set(value)
 		if not self._isNew:
-			# We update the `updates` map only if the object is not new (has
+			# We update the `revision` map only if the object is not new (has
 			# been registered)
-			self._updates[name] = self._updates["oid"] = max(
+			self._revision[name] = self._revision["id"] = max(
 				getTimestamp() if timestamp is None else timestamp,
-				self._updates.get(name, -1),
+				self._revision.get(name, -1),
 			)
 		return self
 
@@ -455,7 +451,7 @@ class StoredObject(Storable):
 		"""Returns the given relation object"""
 		if name in self.__class__.RELATIONS:
 			# We Lazily create the relation
-			if not name in self._relations:
+			if name not in self._relations:
 				self._relations[name] = Relation(self, self.RELATIONS[name])
 			return self._relations[name]
 		else:
@@ -479,20 +475,17 @@ class StoredObject(Storable):
 						yield o
 						yield from o.iterReferences(limit=limit - 1)
 
-	def getID(self) -> str:
-		return self.oid
-
-	def getUpdateTime(self, key="oid") -> int:
+	def getUpdateTime(self, key="id") -> int:
 		"""Returns the time at with the given object (or key) was updated. The time
 		is returned as a storage timestamp."""
-		if self._updates:
-			return self._updates.get(key, 0)
+		if self._revision:
+			return self._revision.get(key, 0)
 		else:
 			return 0
 
 	def getStorageKey(self) -> str:
 		"""Returns the key used to store this object in a storage."""
-		return self.__class__.StorageKey(self.oid)
+		return self.__class__.StorageKey(self.id)
 
 	def setStorage(self, storage: "ObjectStorage") -> Self:
 		"""Sets the storage object associated with this object."""
@@ -512,7 +505,7 @@ class StoredObject(Storable):
 
 	def remove(self) -> bool:
 		"""Removes the stored element from the storage."""
-		# print "[DEBUG] Removing stored element", self.__class__.__name__, "|", self.oid, "|", self
+		# print "[DEBUG] Removing stored element", self.__class__.__name__, "|", self.id, "|", self
 		if self.storage:
 			self.storage.remove(self)
 			return True
@@ -538,7 +531,7 @@ class StoredObject(Storable):
 	def onRestore(self):
 		"""Invoked when the stored element is restored from the database. This
 		registers the object in the database cache."""
-		# print "XXX ON RESTORE", self.oid, self
+		# print "XXX ON RESTORE", self.id, self
 		self.storage.register(self)
 
 	def onRemove(self):
@@ -562,20 +555,22 @@ class StoredObject(Storable):
 		"""Sets the state of this object given a dictionary loaded from the
 		object storage. Override this to re-construct the object state from
 		what is returned by `__getstate__`"""
+		if "_updates" in state and "_revision" not in state:
+			state["_revision"] = state.pop("_updates")
 		self.__dict__.update(state)
 		self.__dict__["storage"] = self.STORAGE
 		# FIXME: Should not be direct like that
 		assert self.getStorageKey() not in self.STORAGE._cache, (
-			"StoredObject already in cache: %s:%s" % (self.oid, self)
+			"StoredObject already in cache: %s:%s" % (self.id, self)
 		)
 		self.onRestore()
-		# print "[DEBUG] Setting state for", self.oid, "|", self.__class__.__name__,  "|",  self
+		# print "[DEBUG] Setting state for", self.id, "|", self.__class__.__name__,  "|",  self
 
 	def exportWith(self, *keys: str, depth: int = 1):
 		res: dict[str, TPrimitive] = {}
 		for key in keys:
-			if key == "oid":
-				res[key] = str(self.oid)
+			if key == "id":
+				res[key] = str(self.id)
 			elif key == "type":
 				res[key] = self.getTypeName()
 			elif key in self.PROPERTIES:
@@ -589,13 +584,13 @@ class StoredObject(Storable):
 
 	def export(self, **options):
 		"""Returns a dictionary representing this object. By default, it
-		just returns the object id (`oid`) and its class (`class`)."""
+		just returns the object id (`id`) and its class (`class`)."""
 		# SEE: http://stackoverflow.com/questions/1379934/large-numbers-erroneously-rounded-in-javascript
 		# We cannot allow IDs to be long numbers...
 		res = {
-			"oid": str(self.oid),
+			"id": str(self.id),
 			"type": self.getTypeName(),
-			"updates": self._updates,
+			"revision": self._revision,
 		}
 		depth = 1
 		if "depth" in options:
@@ -620,12 +615,12 @@ class StoredObject(Storable):
 		return jsonifier(self.export(**options))
 
 	def __repr__(self):
-		return "<obj:%s %s:%s>" % (self.__class__.__name__, id(self), self.oid)
+		return "<obj:%s %s:%s>" % (self.__class__.__name__, id(self), self.id)
 
 
 # -----------------------------------------------------------------------------
 #
-# PROPERTY DESCRIPTOR
+# ACCESS DESCRIPTORS
 #
 # -----------------------------------------------------------------------------
 
@@ -674,7 +669,7 @@ class RelationDescriptor(object):
 
 # -----------------------------------------------------------------------------
 #
-# PROPERTY
+# ACCESS VALUES
 #
 # -----------------------------------------------------------------------------
 
@@ -690,19 +685,8 @@ class Property(object):
 		self.restored = False
 		assert storedObject, "Property requires stored object instance"
 		self.storedObject = storedObject
-		cap_name = name[0].upper() + name[1:]
-		setter_name = "set" + cap_name
-		getter_name = "get" + cap_name
-		self._setter = (
-			getattr(storedObject, setter_name)
-			if hasattr(storedObject, setter_name)
-			else None
-		)
-		self._getter = (
-			getattr(storedObject, getter_name)
-			if hasattr(storedObject, getter_name)
-			else None
-		)
+		self._setter = _resolveAccessor(storedObject, "set", name)
+		self._getter = _resolveAccessor(storedObject, "get", name)
 
 	def set(self, value):
 		if self._setter:
@@ -800,8 +784,6 @@ class Relation:
 		return self
 
 	def set(self, values):
-		is_many = self.isMany()
-		relation_class = self.getRelationClass()
 		self.clear()
 		if type(values) not in (list, tuple):
 			values = (values,)
@@ -813,7 +795,6 @@ class Relation:
 		# FIXME: We should always have resolve=True, as otherwise the data
 		# might get out of sync. For instance, in ARTNet when a TutorialStep changes
 		# its media, the serialized version of TutorialStep on disk might change
-		is_many = self.isMany()
 		relation_class = self.getRelationClass()
 		values = self.values
 		i = 0
@@ -841,8 +822,8 @@ class Relation:
 						# NOTE: Here we only export the minimum fields so that
 						# we're explicit that this is a reference and not the
 						# full value
-						elif isinstance(v, dict) and "oid" in v and "type" in v:
-							yield {"oid": v["oid"], "type": v["type"]}
+						elif isinstance(v, dict) and "id" in v and "type" in v:
+							yield {"id": v["id"], "type": v["type"]}
 						else:
 							yield v
 				i += 1
@@ -850,14 +831,14 @@ class Relation:
 	def one(self, index=0):
 		try:
 			return next(self.get(resolve=True, start=index))
-		except StopIteration as e:
+		except StopIteration:
 			return None
 
 	def isEmpty(self) -> bool:
 		try:
 			next(self.get(resolve=False))
 			return False
-		except StopIteration as e:
+		except StopIteration:
 			return True
 
 	def contains(self, objectOrID: StoredObject | str) -> bool:
@@ -865,9 +846,9 @@ class Relation:
 		return self.has(objectOrID)
 
 	def has(self, objectOrID: StoredObject | str) -> bool:
-		oid = objectOrID.oid if isinstance(objectOrID, StoredObject) else objectOrID
+		id = objectOrID.id if isinstance(objectOrID, StoredObject) else objectOrID
 		for v in self.get(resolve=False):
-			if isinstance(v, dict) and "oid" in v and "type" in v and v["oid"] == oid:
+			if isinstance(v, dict) and "id" in v and "type" in v and v["id"] == id:
 				return True
 		return False
 
@@ -890,7 +871,7 @@ class Relation:
 	def export(self, **options) -> List[TPrimitive]:
 		o = {}
 		o.update(options)
-		# FIXME: For serialization we want relations to be shallow (oid/type)
+		# FIXME: For serialization we want relations to be shallow (id/type)
 		# We change depth as we want relations to be transparent
 		if "depth" in o:
 			o["depth"] += 1
@@ -938,7 +919,7 @@ class Relation:
 
 # -----------------------------------------------------------------------------
 #
-# OBJECT STORAGE
+# STORAGE RUNTIME
 #
 # -----------------------------------------------------------------------------
 
@@ -995,16 +976,16 @@ class ObjectStorage:
 			"Expected a dictionary as exported by StoredObject.export(), got a %s"
 			% (type(exportedStoredObject))
 		)
-		oid = exportedStoredObject["oid"]
+		id = exportedStoredObject["id"]
 		oclass = exportedStoredObject["type"]
 		# FIXME: Should check if the exported stored object is in cache first!
 		actual_class = self._declaredClasses.get(oclass)
 		if actual_class:
-			key = actual_class.StorageKey(oid)
+			key = actual_class.StorageKey(id)
 			assert key not in self._cache
 			# We instanciate the object, which will then be available in the cache, as
 			# the constructor calls Storage.register.
-			new_object = actual_class(oid, exportedStoredObject, restored=True)
+			new_object = actual_class(id, exportedStoredObject, restored=True)
 			assert key in self._cache
 			return new_object
 		else:
@@ -1027,10 +1008,10 @@ class ObjectStorage:
 			except TypeError:
 				# NOTE: Not sure in which cache we would get a cache error.
 				pass
-			if isinstance(StoredObject, StoredObject):
+			if isinstance(storedObject, StoredObject):
 				storedObject.setStorage(self)
 			self.lock.release()
-		except Exception as e:
+		except Exception:
 			# We make sure to always release the lock here
 			self.lock.release()
 			exception_format = repr(traceback.format_exc()).split("\\n")
@@ -1075,7 +1056,7 @@ class ObjectStorage:
 			if value:
 				value = self.deserializeObjectExport(value)
 				value = self._restore(value)
-				if not (value is None):
+				if value is not None:
 					try:
 						self._cache[key] = value
 					except TypeError:
@@ -1168,13 +1149,9 @@ class ObjectStorage:
 
 	def sync(self):
 		"""Synchronizes the modifications with the backend."""
-		# We store the cached objects in the db, prefetching the keys as the
-		# dictionary may change during iteration
-		keys = list(self._cache.keys())
 		for key, storedObject in list(self._syncQueue.items()):
-			v = storedObject
-			if v:
-				self.backend.update(key, v.export())
+			if storedObject:
+				self.backend.update(key, storedObject.export())
 		self.backend.sync()
 
 	def use(self, *classes):
@@ -1232,6 +1209,20 @@ class ObjectStorage:
 			v.save()
 			self.allocated.append(v)
 		self.allocated = []
+
+
+# -----------------------------------------------------------------------------
+#
+# PUBLIC API
+#
+# -----------------------------------------------------------------------------
+
+__all__ = [
+	"ObjectStorage",
+	"Property",
+	"Relation",
+	"StoredObject",
+]
 
 
 # EOF

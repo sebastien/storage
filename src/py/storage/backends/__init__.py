@@ -1,5 +1,8 @@
-from ..core import Operation, asJSON, unJSON, NOTHING
+"""Backend base classes and backend composition helpers."""
+
 import logging
+
+from ..core import NOTHING, Operation, asJSON, unJSON
 
 # FIXME: Backend should support primitive data only, and do the serialization
 # deserialization to string depending on the capacity of the backend
@@ -30,6 +33,13 @@ import logging
 # Hint:
 #  format=
 #  size=
+
+
+# -----------------------------------------------------------------------------
+#
+# BACKEND BASE API
+#
+# -----------------------------------------------------------------------------
 
 
 # FIXME: Maybe add a notification system so that storages can be notified
@@ -127,6 +137,13 @@ class StorageBackend:
 		"""Updates the given data in the storage."""
 		raise NotImplementedError
 
+	def set(self, key, data):
+		"""Adds or updates the given data in the storage."""
+		if self.has(key):
+			return self.update(key, data)
+		else:
+			return self.add(key, data)
+
 	def remove(self, key):
 		"""Removes the given data to the storage. In most cases, the
 		metric won't be actually removed, but just invalidated."""
@@ -205,7 +222,7 @@ class StorageBackend:
 
 # -----------------------------------------------------------------------------
 #
-# MULTI BACKEND
+# BACKEND COMPOSITION
 #
 # -----------------------------------------------------------------------------
 
@@ -291,6 +308,18 @@ class MultiBackend(StorageBackend):
 	def stream(self, key, size=None):
 		"""Streams the data at the given key by chunks of given `size`"""
 		raise NotImplementedError
+
+
+# -----------------------------------------------------------------------------
+#
+# PUBLIC API
+#
+# -----------------------------------------------------------------------------
+
+__all__ = [
+	"MultiBackend",
+	"StorageBackend",
+]
 
 
 # EOF

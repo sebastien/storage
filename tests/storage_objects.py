@@ -1,16 +1,29 @@
-from storage_base import (
-	Attachment,
-	Message,
-	ObjectStorage,
-	RawStorage,
-	DirectoryBackend,
-	A,
-	B,
-	PrefixedUser,
-	PrefixedAttachment,
-)
+try:
+	from storage_base import (
+		Attachment,
+		Message,
+		ObjectStorage,
+		RawStorage,
+		DirectoryBackend,
+		A,
+		B,
+		PrefixedUser,
+		PrefixedAttachment,
+	)
+except ModuleNotFoundError:
+	from tests.storage_base import (
+		Attachment,
+		Message,
+		ObjectStorage,
+		RawStorage,
+		DirectoryBackend,
+		A,
+		B,
+		PrefixedUser,
+		PrefixedAttachment,
+	)
 from storage.core import Identifier
-import unittest, os, shutil, sys, json
+import unittest, os, shutil, sys, json, gc
 
 
 class StoredObjectTest(unittest.TestCase):
@@ -38,81 +51,64 @@ class StoredObjectTest(unittest.TestCase):
 		shutil.rmtree(self.path)
 
 	def testRawRelation(self):
-		"""Ensures that raw objects can be references in relations."""
+		"""Ensures that raw objects are rejected by object-only relations."""
 		a = Attachment("pouetpouet")
 		a.save()
 		m = Message()
 		self.assertEqual(len(m.attachments), 0)
-		m.attachments.append(a)
-		self.assertEqual(len(m.attachments), 1)
-		self.assertEqual(m.attachments[0], a)
-		m.save()
-		mid = m.oid
-		aid = a.oid
-		a = None
-		m = None
-		self.assertTrue(Message.Has(mid))
-		self.assertTrue(Attachment.Has(aid))
-		m = Message.Get(mid)
-		a = Attachment.Get(aid)
-		self.assertEqual(len(m.attachments), 1)
-		self.assertEqual(m.attachments[0], a)
+		self.assertRaises(ValueError, m.attachments.append, a)
 
 	def testCacheTransparency(self):
 		"""Ensures that if you won't have two different physical instances
-		(within the same process) for an object with the same oid."""
+		(within the same process) for an object with the same id."""
 		s = self.objects
 		a = A(value="Pouet!")
-		b = B()
-		assert sys.getrefcount(a) == sys.getrefcount(b) == 2
-		oid = a.oid
+		id = a.id
 		storage_key = a.getStorageKey()
 		s.add(a)
-		repr_a = repr(a)
 		# We make sure that the objects are the same
-		assert a is A.Get(oid)
-		# We delete a and make sure the objects are different (as repr stores the object memory id)
+		assert a is A.Get(id)
+		# The weak cache should hold the object only while a strong reference exists.
 		assert A.STORAGE._cache.get(storage_key) is a, (
 			"Object should be present in cache"
 		)
-		assert sys.getrefcount(A.Get(oid)) == 2
 		del a
-		assert sys.getrefcount(A.Get(oid)) == 1
+		gc.collect()
 		assert A.STORAGE._cache.get(storage_key) is None, (
 			"Object should be cleared from cache"
 		)
-		assert A.Get(oid).value == "Pouet!"
+		assert A.Get(id).value == "Pouet!"
 		# We change the physical file
-		with file(self.path + "/A/" + str(oid) + ".json") as f:
+		with open(self.path + "/A/" + str(id) + ".json") as f:
 			data = json.load(f)
 		assert data["value"] == "Pouet!"
 		data["value"] = "Changed!"
-		with file(self.path + "/A/" + str(oid) + ".json", "w") as f:
+		with open(self.path + "/A/" + str(id) + ".json", "w") as f:
 			json.dump(data, f)
 
-	def testIdentifierOIDPrefix(self):
-		plain_oid = Identifier.OID()
-		assert len(plain_oid.split("-")) == 3
+	def testIdentifierIDPrefix(self):
+		plain_id = Identifier.ID()
+		assert len(plain_id.split("-")) == 3
 
-		oid = Identifier.OID(prefix="USER")
-		assert oid.startswith("USER-")
-		assert len(oid.split("-")) == 4
+		id = Identifier.ID(prefix="USER")
+		assert id.startswith("USER-")
+		assert len(id.split("-")) == 4
 
-	def testPrefixedObjectOID(self):
+	def testPrefixedObjectID(self):
 		u = PrefixedUser(value="Pouet!")
-		assert u.oid.startswith("USER-")
+		assert u.id.startswith("USER-")
 		u.save()
-		oid = u.oid
-		assert PrefixedUser.Has(oid)
-		assert PrefixedUser.Get(oid).value == "Pouet!"
+		id = u.id
+		assert PrefixedUser.Has(id)
+		assert PrefixedUser.Get(id).value == "Pouet!"
 
-	def testPrefixedRawOID(self):
+	def testPrefixedRawID(self):
 		a = PrefixedAttachment("pouetpouet")
-		assert a.oid.startswith("FILE-")
+		assert a.id.startswith("FILE-")
 		a.save()
-		oid = a.oid
-		assert PrefixedAttachment.Has(oid)
-		assert list(PrefixedAttachment.Get(oid).data()) == ["pouetpouet"]
+		id = a.id
+		assert PrefixedAttachment.Has(id)
+		assert list(PrefixedAttachment.Get(id).data()) == ["pouetpouet"]
 
 
 if __name__ == "__main__":

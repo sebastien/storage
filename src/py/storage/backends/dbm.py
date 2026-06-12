@@ -37,9 +37,9 @@ class DBMBackend(StorageBackend):
 		# NOTE: I've encountered a lot of problems with DBM, it does not
 		# seem to be very reliable for that kind of application
 		retries = 5
-		if not self.values:
+		if self.values is None:
 			self._open()
-		if not self.values:
+		if self.values is None:
 			raise RuntimeError(f"Could not open DBM database at: {self.path}")
 		if key:
 			while True:
@@ -111,10 +111,10 @@ class DBMBackend(StorageBackend):
 
 	def count(self, key=None) -> int:
 		assert key is None, "Not implemented"
-		return len(self.values) if self.values else 0
+		return len(self.values) if self.values is not None else 0
 
 	def close(self) -> bool:
-		if self.values:
+		if self.values is not None:
 			self.sync()
 			self.values.close()
 			self.values = None

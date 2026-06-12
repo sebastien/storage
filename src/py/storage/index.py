@@ -1,18 +1,21 @@
-from . import Storable
+"""Index extraction, registry, and index storage runtime."""
+
+import re
+import unicodedata
 from typing import Optional, Type
+
 from .backends import StorageBackend
-from .core import getCanonicalName, getTimestamp
-import re, unicodedata
+from .core import Storable, getCanonicalName, getTimestamp
 
 RE_SPACES = re.compile(r"[\s\t\n]+")
 RE_NOALPHANUM = re.compile("[^A-Za-z0-9]+")
 
-# -----------------------------------------------------------------------------
-#
-# INDEXING
-#
-# -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+#
+# INDEX EXTRACTORS
+#
+# -----------------------------------------------------------------------------
 
 class Indexing:
 	"""A collection of functions that transform the given value into a value
@@ -117,7 +120,7 @@ class Indexing:
 
 # -----------------------------------------------------------------------------
 #
-# INDEXES
+# INDEX REGISTRY
 #
 # -----------------------------------------------------------------------------
 
@@ -215,6 +218,13 @@ class Indexes:
 				index.save()
 		return self
 
+
+# -----------------------------------------------------------------------------
+#
+# INDEX API
+#
+# -----------------------------------------------------------------------------
+
 	def _createIndexFunctions(self, name, extractor, storableClass):
 		def r(value, storableClass=storableClass):
 			return storableClass.STORAGE.get(value)
@@ -233,13 +243,6 @@ class Indexes:
 				)
 
 			return e2, r
-
-
-# -----------------------------------------------------------------------------
-#
-# INDEX
-#
-# -----------------------------------------------------------------------------
 
 
 class Index:
@@ -293,7 +296,7 @@ class Index:
 		try:
 			next(self(key))
 			return True
-		except StopIteration as e:
+		except StopIteration:
 			return False
 
 	def count(self, key):
@@ -437,7 +440,7 @@ class IndexStorage(object):
 				forward_mapping = self.forwardBackend.get(previous_key)
 				values = [_ for _ in forward_mapping or () if _ != sig]
 				if not values:
-					if forward_mapping != None:
+					if forward_mapping is not None:
 						self.forwardBackend.remove(previous_key)
 				else:
 					self.forwardBackend.update(previous_key, values)
@@ -453,6 +456,21 @@ class IndexStorage(object):
 		self.backwardBackend.sync()
 		if self.metaBackend != self.backwardBackend:
 			self.metaBackend.sync()
+
+
+# -----------------------------------------------------------------------------
+#
+# PUBLIC API
+#
+# -----------------------------------------------------------------------------
+
+__all__ = [
+	"AttrDict",
+	"Index",
+	"Indexes",
+	"Indexing",
+	"IndexStorage",
+]
 
 
 # EOF

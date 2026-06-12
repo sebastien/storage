@@ -1,21 +1,13 @@
-from . import (
-	Operation,
-	DirectoryBackend,
-	getCanonicalName,
-	getTimestamp,
-	Storable,
-	NOTHING,
-)
+"""Monotone metric model and storage helpers."""
+
 import json
 
-__doc__ = """\
-This module provides a model and persistenc backends to store monotone metrics
-data (ie, metrics that do no change, but are just sampled at specific moments)
-"""
+from .backends.fs import DirectoryBackend
+from .core import NOTHING, Operation, Storable, getCanonicalName, getTimestamp
 
 # -----------------------------------------------------------------------------
 #
-# STORED METRIC
+# METRIC MODEL
 #
 # -----------------------------------------------------------------------------
 
@@ -27,7 +19,7 @@ class StoredMetric(Storable):
 
 	@classmethod
 	def Recognizes(cls, data):
-		if type(data) == dict:
+		if isinstance(data, dict):
 			for key in ("name", "value", "timestamp"):
 				if key not in data:
 					return False
@@ -72,9 +64,7 @@ class StoredMetric(Storable):
 
 	def getTimestamp(self):
 		"""Returns the timestamp corresponding to the moment where the value
-		was sampled. The recommended format here is an integer number
-		following 'YYYYMMDDhhmmss' -- so that they are easy to read when
-		view and still preserve ordering."""
+		was sampled, as a UTC Unix epoch timestamp in seconds."""
 		return self.timestamp
 
 	def get(self, key=NOTHING):
@@ -267,6 +257,19 @@ class MetricsDirectoryBackend(DirectoryBackend):
 			return key
 		else:
 			return key, data
+
+
+# -----------------------------------------------------------------------------
+#
+# PUBLIC API
+#
+# -----------------------------------------------------------------------------
+
+__all__ = [
+	"MetricStorage",
+	"MetricsDirectoryBackend",
+	"StoredMetric",
+]
 
 
 # EOF - vim: tw=80 ts=4 sw=4 noet
