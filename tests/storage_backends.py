@@ -457,6 +457,98 @@ class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 
 # -----------------------------------------------------------------------------
 #
+# JOURNAL BACKEND TEST
+#
+# -----------------------------------------------------------------------------
+
+
+class JournalBackendTest(AbstractBackendTest, unittest.TestCase):
+	def _createBackend(self):
+		return storage.JournalBackend(storage.MemoryBackend())
+
+	def testJournalChanges(self):
+		self.backend.add("User.1", {"id": "1", "type": "User", "value": "A"})
+		cursor = self.backend.getCursor()
+		self.backend.update("User.1", {"id": "1", "type": "User", "value": "B"})
+		self.backend.remove("User.1")
+
+		changes = self.backend.getChanges(since=cursor)
+		self.assertEqual(2, len(changes))
+		self.assertEqual("+", changes[0]["operation"])
+		self.assertEqual("-", changes[1]["operation"])
+		self.assertEqual(["User.1"], self.backend.getChangedKeys(since=cursor))
+
+	def testJournalUpdatePayload(self):
+		self.backend.add("User.1", {"id": "1", "type": "User", "value": "A"})
+		update = self.backend.getUpdate(since=0)
+		self.assertEqual(self.backend.getCursor(), update["cursor"])
+		self.assertFalse(update["compacted"])
+		self.assertEqual(["User.1"], update["changed"])
+		self.assertEqual("", update["changes"][0]["patch"][0]["path"])
+
+	def testJournalRelationDelta(self):
+		self.backend.add(
+			"Message.1",
+			{
+				"id": "1",
+				"type": "Message",
+				"replyTo": [{"id": "2", "type": "Message"}],
+			},
+		)
+		self.backend.update(
+			"Message.1",
+			{
+				"id": "1",
+				"type": "Message",
+				"replyTo": [{"id": "3", "type": "Message"}],
+			},
+		)
+		change = self.backend.getChanges()[-1]
+		self.assertEqual(
+			[{"id": "3", "type": "Message"}], change["relations"]["replyTo"]["added"]
+		)
+		self.assertEqual(
+			[{"id": "2", "type": "Message"}], change["relations"]["replyTo"]["removed"]
+		)
+
+	def testJournalSubscribePrefix(self):
+		seen = []
+		self.backend.subscribe("User.", lambda key, operation, entry: seen.append(entry))
+		self.backend.add("User.1", "A")
+		self.backend.add("Message.1", "B")
+		self.assertEqual(1, len(seen))
+		self.assertEqual("User.1", seen[0]["key"])
+
+	def testJournalCompaction(self):
+		self.backend.maxEntriesPerKey = 2
+		self.backend.add("User.1", {"id": "1", "type": "User", "value": "A"})
+		self.backend.update("User.1", {"id": "1", "type": "User", "value": "B"})
+		self.backend.update("User.1", {"id": "1", "type": "User", "value": "C"})
+
+		update = self.backend.getUpdate(since=0)
+		self.assertTrue(update["compacted"])
+		self.assertEqual(["User.1"], update["changed"])
+		self.assertEqual("User.1", update["snapshots"][0]["key"])
+		self.assertEqual("C", update["snapshots"][0]["value"]["value"])
+
+	def testJournalRawMetadata(self):
+		backend = storage.JournalBackend(storage.SQLiteBackend(self.path + "-raw"))
+		try:
+			backend.clear()
+			backend.saveRawData("blob", b"abcdef")
+			change = backend.getChanges()[0]
+			self.assertEqual("+R", change["operation"])
+			self.assertEqual(6, change["meta"]["size"])
+			self.assertIsNotNone(change["meta"]["sha256"])
+		finally:
+			backend.backend.close()
+			for suffix in (".sqlite3", ".sqlite3-shm", ".sqlite3-wal"):
+				if os.path.exists(self.path + "-raw" + suffix):
+					os.remove(self.path + "-raw" + suffix)
+
+
+# -----------------------------------------------------------------------------
+#
 # DIRECTORY BACKEND TEST
 #
 # -----------------------------------------------------------------------------
