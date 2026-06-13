@@ -1,8 +1,12 @@
+import asyncio
+import json
+import time
 import types
 import sys
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import unquote
+from uuid import uuid4
 
 try:
 	from extra import HTTPRequest, HTTPResponse, Service
@@ -93,10 +97,190 @@ class StorageDecoration:
 		)
 
 
+class StorageWebError(Exception):
+	"""Structured web API error with a compact reportable code."""
+
+	def __init__(self, errno, error, problem, received=None, expected=None, status=400):
+		Exception.__init__(self, error)
+		self.errno = errno
+		self.error = error
+		self.problem = problem
+		self.received = received
+		self.expected = expected
+		self.status = status
+
+	def payload(self, context=None):
+		res = dict(
+			ok=False,
+			errno=self.errno,
+			error=self.error,
+			problem=self.problem,
+			expected=self.expected,
+			status=self.status,
+		)
+		if self.received is not None:
+			res["received"] = self.received
+		if context:
+			res["context"] = context
+		return res
+
+
+class StorageChannel:
+	"""In-memory SSE channel backed by journal subscriptions."""
+
+	def __init__(self, server):
+		self.server = server
+		self.id = uuid4().hex
+		self.queue = asyncio.Queue(maxsize=server.CHANNEL_QUEUE_SIZE)
+		self.subscriptions = {}
+		self.closed = False
+		self.attached = False
+		self.lastSeen = time.time()
+		try:
+			self.loop = asyncio.get_running_loop()
+		except RuntimeError:
+			self.loop = None
+
+	def touch(self):
+		self.lastSeen = time.time()
+		return self
+
+	def attach(self):
+		self.attached = True
+		self.touch()
+		return self
+
+	def detach(self):
+		self.attached = False
+		self.touch()
+		return self
+
+	def command(self, command):
+		if not isinstance(command, dict):
+			return StorageWebError(
+				"BADITEM",
+				"Invalid storage channel command.",
+				"Each storage channel command must be an object.",
+				received=self.server.describeValue(command),
+				expected='A channel command object such as {"op":"subscribe","target":{...}}.',
+			).payload(dict(operation="channel"))
+		op = command.get("op")
+		if op == "subscribe":
+			return self.subscribe(command.get("target"))
+		elif op == "unsubscribe":
+			return self.unsubscribe(command.get("target"))
+		elif op == "heartbeat":
+			self.touch()
+			return dict(ok=True, op=op)
+		elif op == "close":
+			self.close()
+			return dict(ok=True, op=op)
+		else:
+			return StorageWebError(
+				"BADOP",
+				"Unsupported storage channel command.",
+				"The storage channel command operation is not supported: %s." % op,
+				received=dict(op=op),
+				expected='Supported channel operations: "subscribe", "unsubscribe", "heartbeat", "close".',
+			).payload(dict(operation="channel"))
+
+	def subscribe(self, target):
+		resolved, error = self.server.resolveJournalTarget(target)
+		if error:
+			return error.payload(dict(operation="channel", op="subscribe"))
+		sub_id = self.subscriptionID(resolved)
+		if sub_id in self.subscriptions:
+			return dict(ok=True, op="subscribe", target=target, duplicate=True)
+
+		def callback(key, operation, entry):
+			self.notify(resolved, key, operation, entry)
+
+		resolved["callback"] = callback
+		resolved["backend"].subscribe(resolved["key"], callback)
+		self.subscriptions[sub_id] = resolved
+		return dict(ok=True, op="subscribe", target=target)
+
+	def unsubscribe(self, target):
+		resolved, error = self.server.resolveJournalTarget(target)
+		if error:
+			return error.payload(dict(operation="channel", op="unsubscribe"))
+		sub_id = self.subscriptionID(resolved)
+		stored = self.subscriptions.pop(sub_id, None)
+		if stored:
+			stored["backend"].unsubscribe(stored["key"], stored["callback"])
+		return dict(ok=True, op="unsubscribe", target=target)
+
+	def subscriptionID(self, resolved):
+		target = resolved.get("target") or {}
+		return "%s:%s:%s" % (id(resolved.get("backend")), resolved.get("key"), json.dumps(target, sort_keys=True))
+
+	def notify(self, resolved, key, operation, entry):
+		target = resolved.get("target") or {}
+		if target.get("kind") == "relation":
+			relations = entry.get("relations") or {}
+			if target.get("name") not in relations:
+				return
+		data = self.server.journalEvent(entry)
+		backend = resolved.get("backend")
+		if operation != "-" and backend and backend.has(key):
+			data["value"] = backend.get(key)
+		data["target"] = target
+		self.enqueue(data.get("event", "update"), data, id=data.get("seq"))
+
+	def enqueue(self, event, data=None, id=None):
+		if self.closed:
+			return self
+		item = (event, data or {}, id)
+		def put():
+			if self.closed:
+				return
+			if self.queue.full():
+				try:
+					self.queue.get_nowait()
+				except asyncio.QueueEmpty:
+					pass
+			self.queue.put_nowait(item)
+		if self.loop and self.loop.is_running():
+			self.loop.call_soon_threadsafe(put)
+		else:
+			put()
+		return self
+
+	async def stream(self):
+		self.attach()
+		yield self.server.formatSSE("ready", dict(id=self.id))
+		try:
+			while not self.closed:
+				try:
+					event, data, id = await asyncio.wait_for(
+						self.queue.get(), timeout=self.server.CHANNEL_HEARTBEAT
+					)
+				except asyncio.TimeoutError:
+					self.touch()
+					yield self.server.formatSSE("ping", dict(time=time.time()))
+					continue
+				yield self.server.formatSSE(event, data, id=id)
+		finally:
+			self.detach()
+
+	def close(self):
+		if self.closed:
+			return self
+		self.closed = True
+		for sub in list(self.subscriptions.values()):
+			sub["backend"].unsubscribe(sub["key"], sub["callback"])
+		self.subscriptions.clear()
+		self.enqueue("close", dict(id=self.id))
+		return self
+
+
 class StorageServer(Service):
 	"""An Extra service that exposes storables through a REST-like API."""
 
 	LIST_COUNT = 20
+	CHANNEL_HEARTBEAT = 15
+	CHANNEL_TTL = 45
+	CHANNEL_QUEUE_SIZE = 1000
 
 	def __init__(self, prefix="/api", classes=None, readonly=False):
 		prefix = prefix.strip("/")
@@ -104,21 +288,9 @@ class StorageServer(Service):
 		Service.__init__(self, prefix=prefix)
 		self.storableClasses = []
 		self.readonly = readonly
-		self._onUpdate = []
+		self.channels = {}
 		if classes:
 			self.add(*classes)
-
-	def onUpdate(self, callback):
-		self._onUpdate.append(callback)
-		return self
-
-	def offUpdate(self, callback):
-		self._onUpdate = [_ for _ in self._onUpdate if _ is not callback]
-		return self
-
-	def _doUpdate(self):
-		for _ in self._onUpdate:
-			_()
 
 	def use(self, *storableClasses):
 		"""Alias for `add`."""
@@ -137,6 +309,30 @@ class StorageServer(Service):
 		return self
 
 	def iterHandlers(self) -> Iterable[Handler]:
+		async def handler_commands(request: HTTPRequest) -> HTTPResponse:
+			return await self.onCommands(request)
+
+		async def handler_channel_create(request: HTTPRequest) -> HTTPResponse:
+			return await self.onChannelCreate(request)
+
+		def handler_channel_events(request: HTTPRequest, cid: str) -> HTTPResponse:
+			return self.onChannelEvents(request, cid)
+
+		async def handler_channel_commands(request: HTTPRequest, cid: str) -> HTTPResponse:
+			return await self.onChannelCommands(request, cid)
+
+		def handler_channel_heartbeat(request: HTTPRequest, cid: str) -> HTTPResponse:
+			return self.onChannelHeartbeat(request, cid)
+
+		def handler_channel_close(request: HTTPRequest, cid: str) -> HTTPResponse:
+			return self.onChannelClose(request, cid)
+
+		yield self._handler(handler_commands, ("POST", "commands"))
+		yield self._handler(handler_channel_create, ("POST", "channel"))
+		yield self._handler(handler_channel_events, ("GET", "channel/{cid:segment}/events"))
+		yield self._handler(handler_channel_commands, ("POST", "channel/{cid:segment}/commands"))
+		yield self._handler(handler_channel_heartbeat, ("POST", "channel/{cid:segment}/heartbeat"))
+		yield self._handler(handler_channel_close, ("POST", "channel/{cid:segment}/close"))
 		for storableClass in self.storableClasses:
 			yield from self._iterHandlers(storableClass)
 
@@ -170,23 +366,420 @@ class StorageServer(Service):
 			storable = storableClass.Import(data).save()
 		else:
 			storable = storableClass()
-		self._doUpdate()
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	async def onStorableUpdate(self, storableClass, info, request, sid):
 		sid = unquote(sid)
 		if self.readonly:
 			return request.notAuthorized()
+		try:
+			data = await request.loadParams()
+			self.validateUpdatePayload(data, dict(type=info.getName(), id=sid))
+			storable = self.applyStorableUpdate(storableClass, sid, data)
+		except StorageWebError as error:
+			return self.storageError(request, error, dict(type=info.getName(), id=sid))
+		except ValueError as error:
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADPAYLOAD",
+					"Invalid storage update payload.",
+					str(error),
+					received=self.describeRequest(request),
+					expected="A JSON or form object with non-empty storage field names.",
+				),
+				dict(type=info.getName(), id=sid),
+			)
+		return request.returns(storable.export(**info.getExportOptions()))
+
+	def applyStorableUpdate(self, storableClass, sid, data):
+		data = dict(data or {})
 		storable = storableClass.Get(sid)
-		data = await request.loadParams()
 		if not storable:
+			if "id" not in data:
+				data["id"] = sid
 			storable = storableClass.Import(data)
 			storable.save()
 		else:
 			storable.update(data)
 			storable.save()
-		self._doUpdate()
-		return request.returns(storable.export(**info.getExportOptions()))
+		return storable
+
+	async def onCommands(self, request):
+		if self.readonly:
+			return request.notAuthorized()
+		try:
+			data = await request.loadData()
+		except ValueError as error:
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADPAYLOAD",
+					"Invalid storage commands payload.",
+					str(error),
+					received=self.describeRequest(request),
+					expected='A JSON object with a "commands" list.',
+				),
+				dict(operation="commands"),
+			)
+		commands = data.get("commands") if isinstance(data, dict) else None
+		if not isinstance(commands, list):
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADLIST",
+					"Invalid storage commands list.",
+					'The storage commands payload must contain a "commands" list.',
+					received=self.describeValue(data),
+					expected='A JSON object such as {"commands":[{"op":"update",...}]}.',
+				),
+				dict(operation="commands"),
+			)
+		results = []
+		for index, command in enumerate(commands):
+			result = await self.onCommand(command, index=index)
+			results.append(result)
+		return request.returns(dict(results=results))
+
+	async def onCommand(self, command, index=None):
+		if not isinstance(command, dict):
+			return StorageWebError(
+				"BADITEM",
+				"Invalid storage command.",
+				"Each storage command must be an object.",
+				received=self.describeValue(command),
+				expected='A command object such as {"op":"update","type":"items","id":"...","fields":{...}}.',
+			).payload(dict(operation="commands", index=index))
+		op = command.get("op")
+		try:
+			if op == "update":
+				return self.onUpdateCommand(command, index=index)
+			else:
+				return StorageWebError(
+					"BADOP",
+					"Unsupported storage command.",
+					"The storage command operation is not supported: %s." % op,
+					received=dict(op=op),
+					expected='Supported command operation: "update".',
+				).payload(dict(operation="commands", index=index))
+		except StorageWebError as error:
+			return error.payload(dict(operation="commands", index=index, op=op))
+		except Exception as error:
+			return StorageWebError(
+				"INTERNAL",
+				"Unexpected storage command error.",
+				str(error),
+				received=dict(op=op, type=command.get("type"), id=command.get("id")),
+				expected="The command should complete without an internal server error.",
+				status=500,
+			).payload(dict(operation="commands", index=index, op=op))
+
+	def onUpdateCommand(self, command, index=None):
+		command_type = command.get("type")
+		sid = command.get("id")
+		fields = command.get("fields", {})
+		match = self.resolveStorable(command_type)
+		if not match:
+			raise StorageWebError(
+				"BADTYPE",
+				"Storage type not found.",
+				"No web storage type is registered for this command type.",
+				received=dict(type=command_type),
+				expected="A registered storage type or route name.",
+				status=404,
+			)
+		if sid is None:
+			raise StorageWebError(
+				"NOID",
+				"Storage command id is required.",
+				"The update command does not identify which object to update.",
+				received=dict(id=sid),
+				expected='An "id" string in the update command.',
+			)
+		self.validateUpdatePayload(fields, dict(type=command_type, id=sid, index=index))
+		storableClass, info = match
+		storable = self.applyStorableUpdate(storableClass, str(sid), fields)
+		return dict(
+			ok=True,
+			op="update",
+			type=command_type,
+			id=str(sid),
+			value=storable.export(**info.getExportOptions()),
+		)
+
+	def validateUpdatePayload(self, data, context=None):
+		if not isinstance(data, dict):
+			raise StorageWebError(
+				"BADPAYLOAD",
+				"Invalid storage update payload.",
+				"The storage update payload must be an object.",
+				received=self.describeValue(data),
+				expected='A JSON object such as {"title":"..."}.',
+			)
+		for name in data.keys():
+			if not isinstance(name, str):
+				raise StorageWebError(
+					"BADKEY",
+					"Invalid update field name.",
+					"Every update field name must be a string.",
+					received=dict(field=name, fieldType=type(name).__name__, context=context),
+					expected="A string field name.",
+				)
+			if not name.strip():
+				raise StorageWebError(
+					"EMPTYKEY",
+					"Empty update field name.",
+					"The update payload contains an empty field name.",
+					received=dict(field=name, keys=list(data.keys()), context=context),
+					expected='A non-empty storage field name, for example "title".',
+				)
+		return data
+
+	def storageError(self, request, error, context=None):
+		return request.returns(
+			error.payload(self.requestContext(request, context)),
+			status=error.status,
+		)
+
+	def requestContext(self, request, context=None):
+		res = self.describeRequest(request)
+		if context:
+			res.update(context)
+		return res
+
+	def describeRequest(self, request):
+		return dict(
+			method=getattr(request, "method", None),
+			path=getattr(request, "path", None),
+			contentType=getattr(request, "contentType", None),
+		)
+
+	def describeValue(self, value):
+		if isinstance(value, dict):
+			return dict(type="object", keys=list(value.keys()))
+		elif isinstance(value, list):
+			return dict(type="list", length=len(value))
+		else:
+			return dict(type=type(value).__name__, value=value)
+
+	def resolveStorable(self, name):
+		if name is None:
+			return None
+		name = str(name).strip("/")
+		for storableClass in self.storableClasses:
+			info = StorageDecoration.Get(storableClass)
+			url = info.url or info.getName()
+			url = url[1:] if url.startswith("/") else url
+			if name in (url, info.getName(), storableClass.__name__):
+				return storableClass, info
+		return None
+
+	async def onChannelCreate(self, request):
+		self.expireChannels()
+		channel = StorageChannel(self)
+		self.channels[channel.id] = channel
+		return request.returns(
+			dict(
+				id=channel.id,
+				events="channel/%s/events" % channel.id,
+				commands="channel/%s/commands" % channel.id,
+				heartbeat="channel/%s/heartbeat" % channel.id,
+				close="channel/%s/close" % channel.id,
+			)
+		)
+
+	def onChannelEvents(self, request, cid):
+		channel = self.getChannel(cid)
+		if not channel:
+			return request.notFound()
+
+		def onClientClose(_):
+			channel.detach()
+
+		return request.onClose(onClientClose).respond(
+			channel.stream(),
+			contentType="text/event-stream",
+			headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+		)
+
+	async def onChannelCommands(self, request, cid):
+		channel = self.getChannel(cid)
+		if not channel:
+			return request.notFound()
+		try:
+			data = await request.loadData()
+		except ValueError as error:
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADPAYLOAD",
+					"Invalid storage channel payload.",
+					str(error),
+					received=self.describeRequest(request),
+					expected='A JSON object with a "commands" list.',
+				),
+				dict(operation="channel", id=cid),
+			)
+		commands = data.get("commands") if isinstance(data, dict) else None
+		if not isinstance(commands, list):
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADLIST",
+					"Invalid storage channel commands list.",
+					'The storage channel payload must contain a "commands" list.',
+					received=self.describeValue(data),
+					expected='A JSON object such as {"commands":[{"op":"subscribe","target":{...}}]}.',
+				),
+				dict(operation="channel", id=cid),
+			)
+		results = []
+		for command in commands:
+			results.append(channel.command(command))
+		return request.returns(dict(results=results))
+
+	def onChannelHeartbeat(self, request, cid):
+		channel = self.getChannel(cid)
+		if not channel:
+			return request.notFound()
+		channel.touch()
+		return request.returns(dict(ok=True, id=channel.id))
+
+	def onChannelClose(self, request, cid):
+		channel = self.channels.pop(cid, None)
+		if channel:
+			channel.close()
+		return request.returns(dict(ok=True, id=cid))
+
+	def getChannel(self, cid):
+		self.expireChannels()
+		channel = self.channels.get(cid)
+		if channel:
+			channel.touch()
+		return channel
+
+	def expireChannels(self):
+		now = time.time()
+		for cid, channel in list(self.channels.items()):
+			if now - channel.lastSeen > self.CHANNEL_TTL:
+				self.channels.pop(cid, None)
+				channel.close()
+		return self
+
+	def resolveJournalTarget(self, target):
+		if not isinstance(target, dict):
+			return None, StorageWebError(
+				"BADTARGET",
+				"Invalid storage channel target.",
+				"The storage channel target must be an object.",
+				received=self.describeValue(target),
+				expected='A target object such as {"kind":"object","type":"items","id":"..."}.',
+			)
+		kind = target.get("kind")
+		match = self.resolveStorable(target.get("type"))
+		if not match:
+			return None, StorageWebError(
+				"BADTYPE",
+				"Storage type not found.",
+				"No web storage type is registered for this channel target.",
+				received=dict(type=target.get("type"), target=target),
+				expected="A registered storage type or route name.",
+				status=404,
+			)
+		storableClass, info = match
+		backend = self.journalBackend(storableClass)
+		if not backend:
+			return None, StorageWebError(
+				"UNSUPPORTED",
+				"Storage backend does not support channel subscriptions.",
+				"The selected storage backend does not expose journal subscribe/unsubscribe support.",
+				received=dict(type=target.get("type"), target=target),
+				expected="A journal-capable storage backend.",
+			)
+		if kind == "object":
+			if target.get("id") is None:
+				return None, StorageWebError(
+					"NOID",
+					"Storage channel target id is required.",
+					"An object channel target must identify which object to subscribe to.",
+					received=dict(target=target),
+					expected='An "id" string in the channel target.',
+				)
+			return dict(
+				backend=backend,
+				key=storableClass.StorageKey(str(target.get("id"))),
+				target=target,
+				info=info,
+			), None
+		elif kind == "type":
+			return dict(
+				backend=backend,
+				key=storableClass.StoragePrefix(),
+				target=target,
+				info=info,
+			), None
+		elif kind == "relation":
+			if target.get("id") is None or target.get("name") is None:
+				return None, StorageWebError(
+					"BADTARGET",
+					"Invalid storage channel relation target.",
+					"A relation channel target must include both object id and relation name.",
+					received=dict(target=target),
+					expected='A target such as {"kind":"relation","type":"items","id":"...","name":"tags"}.',
+				)
+			return dict(
+				backend=backend,
+				key=storableClass.StorageKey(str(target.get("id"))),
+				target=target,
+				info=info,
+			), None
+		else:
+			return None, StorageWebError(
+				"BADTARGET",
+				"Unsupported storage channel target.",
+				"The storage channel target kind is not supported: %s." % kind,
+				received=dict(kind=kind, target=target),
+				expected='Supported target kinds: "object", "type", "relation".',
+			)
+
+	def journalBackend(self, storableClass):
+		storage = getattr(storableClass, "STORAGE", None)
+		backend = getattr(storage, "backend", None)
+		if backend and all(hasattr(backend, _) for _ in ("subscribe", "unsubscribe", "getUpdate")):
+			return backend
+		return None
+
+	def journalEvent(self, entry):
+		meta = entry.get("meta") or {}
+		operation = entry.get("operation")
+		name = "update"
+		if operation == "-":
+			name = "remove"
+		elif operation == "+":
+			name = "create"
+		return dict(
+			event=name,
+			seq=entry.get("seq"),
+			operation=operation,
+			key=entry.get("key"),
+			type=meta.get("objectType"),
+			id=meta.get("objectID"),
+			revision=meta.get("revision"),
+			patch=entry.get("patch") or [],
+			relations=entry.get("relations") or {},
+			entry=entry,
+		)
+
+	def formatSSE(self, event, data=None, id=None):
+		lines = []
+		if event:
+			lines.append("event: %s" % event)
+		if id is not None:
+			lines.append("id: %s" % id)
+		text = json.dumps(data or {}, separators=(",", ":"))
+		for line in text.splitlines() or [""]:
+			lines.append("data: %s" % line)
+		return "\n".join(lines) + "\n\n"
 
 	def onStorableRemove(self, storableClass, info, request, sid):
 		sid = unquote(sid)
@@ -195,7 +788,6 @@ class StorageServer(Service):
 		storable = storableClass.Get(sid)
 		if storable:
 			storable.remove()
-			self._doUpdate()
 			return request.returns(True)
 		else:
 			return request.notFound()
@@ -204,10 +796,10 @@ class StorageServer(Service):
 		sid = unquote(sid)
 		storable = storableClass.Get(sid)
 		if not storable:
-			if request.query and "strict" in request.query:
+			if request.param("strict") is not None:
 				return request.notFound()
 			else:
-				storable = storableClass(id=sid)
+				return request.returns(storableClass.Export(sid, **info.getExportOptions()))
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	async def onStorableInvokeMethod(
@@ -228,7 +820,17 @@ class StorageServer(Service):
 				body_kwargs.update(kwargs)
 				kwargs = body_kwargs
 			elif data is not None:
-				raise ValueError(f"Unsupported payload type: {type(data)}")
+				return self.storageError(
+					request,
+					StorageWebError(
+						"BADPAYLOAD",
+						"Invalid storage method payload.",
+						"Storage method POST payloads must be a JSON object, JSON list, or empty body.",
+						received=self.describeValue(data),
+						expected="A JSON object for keyword arguments, a JSON list for positional arguments, or no body.",
+					),
+					dict(operation="invoke", method=name, id=sid),
+				)
 		else:
 			query = dict(request.query or {})
 			query.update(kwargs)

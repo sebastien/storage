@@ -3,14 +3,15 @@ import json
 import shutil
 import tempfile
 import unittest
+from uuid import uuid4
 
-from storage import DirectoryBackend, Types
+from storage import DirectoryBackend, JournalBackend, MemoryBackend, Types
 from storage.objects import ObjectStorage, StoredObject
 from storage.raw import RawStorage, StoredRaw
 from storage.web import StorageServer, http
 
 from extra.handler import AWSLambdaEvent
-from extra.http.model import HTTPBodyBlob, HTTPBodyFile, HTTPResponse
+from extra.http.model import HTTPBodyAsyncStream, HTTPBodyBlob, HTTPBodyFile, HTTPResponse
 from extra.model import Application
 
 
@@ -118,7 +119,18 @@ class StorageWebTest(unittest.TestCase):
 		self.assertEqual(response.status, 200)
 		self.assertTrue(removed)
 
-		response, payload = self.request("GET", f"/api/items/{id}?strict=1")
+		response, payload = self.request("GET", f"/api/items/{id}?strict")
+		self.assertEqual(response.status, 404)
+		self.assertEqual(payload.decode("utf8"), "Not Found")
+
+	def testNonStrictGetDoesNotCreateMissingObject(self):
+		missingId = f"missing-{uuid4().hex}"
+		response, fetched = self.requestJSON("GET", f"/api/items/{missingId}")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(fetched["id"], missingId)
+		self.assertFalse(WebItem.Has(missingId))
+
+		response, payload = self.request("GET", f"/api/items/{missingId}?strict")
 		self.assertEqual(response.status, 404)
 		self.assertEqual(payload.decode("utf8"), "Not Found")
 
@@ -147,6 +159,135 @@ class StorageWebTest(unittest.TestCase):
 		self.assertEqual(response.status, 200)
 		self.assertEqual(payload, b"payload")
 		self.assertEqual(response.headers.headers.get("Content-Type"), "text/plain")
+
+	def testUpdateRejectsEmptyFieldNameWithStructuredError(self):
+		item = WebItem(value="alpha").save()
+		response, error = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}",
+			body=json.dumps({"": "beta"}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 400)
+		self.assertEqual(error["errno"], "EMPTYKEY")
+		self.assertEqual(error["status"], 400)
+		self.assertIn("problem", error)
+		self.assertIn("expected", error)
+		self.assertEqual(error["received"]["field"], "")
+		self.assertEqual(error["context"]["path"], f"/api/items/{item.id}")
+
+	def testUpdateRejectsNonObjectPayloadWithStructuredError(self):
+		item = WebItem(value="alpha").save()
+		response, error = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}",
+			body=json.dumps(["beta"]),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 400)
+		self.assertEqual(error["errno"], "BADPAYLOAD")
+		self.assertIn("Expected object payload", error["problem"])
+		self.assertIn("expected", error)
+
+	def testCommandsRejectMalformedPayloadWithStructuredError(self):
+		response, error = self.requestJSON(
+			"POST",
+			"/api/commands",
+			body=json.dumps({"commands": {"op": "update"}}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 400)
+		self.assertEqual(error["errno"], "BADLIST")
+		self.assertIn("commands", error["problem"])
+
+	def testUpdateCommandRejectsEmptyFieldNameWithStructuredError(self):
+		item = WebItem(value="alpha").save()
+		response, payload = self.requestJSON(
+			"POST",
+			"/api/commands",
+			body=json.dumps(
+				{
+					"commands": [
+						{
+							"op": "update",
+							"type": "items",
+							"id": item.id,
+							"fields": {"": "beta"},
+						}
+					]
+				}
+			),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		result = payload["results"][0]
+		self.assertFalse(result["ok"])
+		self.assertEqual(result["errno"], "EMPTYKEY")
+		self.assertEqual(result["status"], 400)
+		self.assertEqual(result["received"]["field"], "")
+		self.assertEqual(result["context"]["index"], 0)
+
+	def testChannelSSEFromJournal(self):
+		self.objects.release()
+		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(WebItem)
+		item = WebItem(value="alpha").save()
+		response, channel = self.requestJSON("POST", "/api/channel")
+		self.assertEqual(response.status, 200)
+
+		async def run():
+			async def post_json(path, data):
+				request = AWSLambdaEvent.AsRequest(
+					AWSLambdaEvent.Create(
+						"POST",
+						path,
+						body=json.dumps(data),
+						headers={"Content-Type": "application/json"},
+					)
+				)
+				response = self.app.process(request)
+				if not isinstance(response, HTTPResponse):
+					response = await response
+				return response
+
+			request = AWSLambdaEvent.AsRequest(
+				AWSLambdaEvent.Create("GET", f"/api/channel/{channel['id']}/events")
+			)
+			response = self.app.process(request)
+			if not isinstance(response, HTTPResponse):
+				response = await response
+			self.assertEqual(response.status, 200)
+			self.assertIsInstance(response.body, HTTPBodyAsyncStream)
+			stream = response.body.stream
+			try:
+				ready = await anext(stream)
+				self.assertIn("event: ready", ready)
+				await post_json(
+					f"/api/channel/{channel['id']}/commands",
+					{
+						"commands": [
+							{
+								"op": "subscribe",
+								"target": {
+									"kind": "object",
+									"type": "items",
+									"id": item.id,
+								},
+							}
+						]
+					},
+				)
+				item.value = "beta"
+				item.save()
+				update = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertTrue("event: update" in update or "event: create" in update)
+				self.assertIn('"value":"beta"', update)
+			finally:
+				await stream.aclose()
+
+		asyncio.run(run())
+		response, closed = self.requestJSON("POST", f"/api/channel/{channel['id']}/close")
+		self.assertEqual(response.status, 200)
+		self.assertTrue(closed["ok"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 const RESERVED_FIELDS = new Set(["id", "type", "revision", "updates"])
 const DEFAULT_PAGE_SIZE = 20
+const DEFAULT_AUTO_PUSH_DELAY = 500
+const DEFAULT_LIVE_COMMAND_DELAY = 200
+const DEFAULT_LIVE_HEARTBEAT = 30000
 
 class StorageBridgeError extends Error {
 	constructor(message, response, body) {
@@ -49,17 +52,32 @@ class StoredAttributes {
 		return this.owner
 	}
 
-	apply(fields) {
+	apply(fields, options = {}) {
 		if (!fields) {
 			return this.owner
 		}
+		const acknowledged = options.acknowledged
 		for (const [name, value] of Object.entries(fields)) {
 			if (!RESERVED_FIELDS.has(name)) {
-				this.values[name] = this.owner.bridge.deserialize(value)
+				if (this.shouldApply(name, value, acknowledged)) {
+					this.values[name] = this.owner.bridge.deserialize(value)
+					this.dirty.delete(name)
+				}
 			}
 		}
-		this.dirty.clear()
 		return this.owner
+	}
+
+	shouldApply(name, value, acknowledged) {
+		if (!this.dirty.has(name)) {
+			return true
+		}
+		if (!acknowledged || !Object.hasOwn(acknowledged, name)) {
+			return false
+		}
+		const current = this.owner.bridge.serialize(this.values[name])
+		const sent = acknowledged[name]
+		return JSON.stringify(current) === JSON.stringify(sent)
 	}
 
 	changes() {
@@ -68,6 +86,10 @@ class StoredAttributes {
 			res[name] = this.owner.bridge.serialize(this.values[name])
 		}
 		return res
+	}
+
+	hasChanges() {
+		return this.dirty.size > 0
 	}
 
 	toJSON() {
@@ -126,6 +148,7 @@ class StoredObject {
 		const before = this.snapshot()
 		this.fields.set(name, value)
 		this.emitChange(before, "local")
+		this.bridge.queuePush(this)
 		return this
 	}
 
@@ -133,10 +156,11 @@ class StoredObject {
 		const before = this.snapshot()
 		this.fields.update(fields)
 		this.emitChange(before, "local")
+		this.bridge.queuePush(this)
 		return this
 	}
 
-	apply(data, direction = "remote") {
+	apply(data, direction = "remote", options = {}) {
 		const before = this.snapshot()
 		if (!data || typeof data !== "object") {
 			throw new Error("StoredObject.apply expects an object")
@@ -151,7 +175,7 @@ class StoredObject {
 		if (data.revision !== undefined || data.updates !== undefined) {
 			this.revision = data.revision || data.updates || {}
 		}
-		this.fields.apply(data)
+		this.fields.apply(data, options)
 		this.emitChange(before, direction)
 		return this
 	}
@@ -159,12 +183,23 @@ class StoredObject {
 	async pull(options = {}) {
 		const query = options.strict ? "?strict=1" : ""
 		const data = await this.bridge.request("GET", `${this.routePath()}${query}`)
-		return this.apply(data, "remote")
+		this.apply(data, "remote")
+		this.bridge.trackObject(this)
+		return this
 	}
 
 	async push() {
-		const data = await this.bridge.request("POST", this.routePath(), this.fields.changes())
-		return this.apply(data, "remote")
+		this.bridge.cancelPush(this)
+		return await this.pushChanges(this.fields.changes())
+	}
+
+	async pushChanges(changes) {
+		const data = await this.bridge.request("POST", this.routePath(), changes)
+		this.apply(data, "remote", { acknowledged: changes })
+		if (this.fields.hasChanges()) {
+			this.bridge.queuePush(this)
+		}
+		return this
 	}
 
 	async remove() {
@@ -291,6 +326,19 @@ class StoredObjectBridge {
 		this.objects = new Map()
 		this.types = new Map()
 		this.typeRoutes = new Map()
+		this.pushQueue = new Map()
+		this.pushTimer = undefined
+		this.inflightRequests = new Map()
+		this.liveCommandQueue = []
+		this.liveCommandTimer = undefined
+		this.batchUnsupported = false
+		this.liveChannel = undefined
+		this.liveSource = undefined
+		this.liveReady = undefined
+		this.liveHeartbeatTimer = undefined
+		this.liveSubscriptions = new Set()
+		this.liveObjects = new Map()
+		this.liveDisposeHandler = undefined
 		this._options = undefined
 		this.setOptions(options)
 	}
@@ -305,7 +353,21 @@ class StoredObjectBridge {
 		if (!this.fetch) {
 			throw new Error("StoredObjectBridge requires fetch")
 		}
+		this.autoPush = options.autoPush === undefined ? true : !!options.autoPush
+		this.autoPushDelay = options.autoPushDelay === undefined ? DEFAULT_AUTO_PUSH_DELAY : options.autoPushDelay
+		this.autoPushBatch = options.autoPushBatch === undefined ? true : !!options.autoPushBatch
+		this.commandPath = options.commandPath === undefined ? "commands" : options.commandPath
+		this.live = options.live === undefined ? true : !!options.live
+		this.livePath = options.livePath === undefined ? "channel" : options.livePath
+		this.liveCommandDelay = options.liveCommandDelay === undefined ? DEFAULT_LIVE_COMMAND_DELAY : options.liveCommandDelay
+		this.liveHeartbeat = options.liveHeartbeat === undefined ? DEFAULT_LIVE_HEARTBEAT : options.liveHeartbeat
+		this.EventSource = options.EventSource || globalThis.EventSource
 		this._options = this.optionsSnapshot(options)
+		this.schedulePush()
+		if (!this.live) {
+			this.closeLive()
+		}
+		this.setupDisposeHandler()
 		return this
 	}
 
@@ -336,6 +398,7 @@ class StoredObjectBridge {
 		}
 		if (data) {
 			res.apply(data, "remote")
+			this.trackObject(res)
 		}
 		return res
 	}
@@ -369,6 +432,400 @@ class StoredObjectBridge {
 			data = undefined
 		}
 		return this.deserialize(await this.request(method, path, data))
+	}
+
+	trackObject(object) {
+		if (!this.live) {
+			return object
+		}
+		const key = this.cacheKey(object.routeType, object.id)
+		this.liveObjects.set(key, object)
+		this.subscribeLive({ kind: "object", type: object.routeType, id: object.id })
+		const fields = object.fields.toJSON()
+		this.trackReferences(fields)
+		for (const [name, value] of Object.entries(fields)) {
+			if (this.objectReferences(value).length) {
+				this.subscribeLive({ kind: "relation", type: object.routeType, id: object.id, name })
+			}
+		}
+		return object
+	}
+
+	trackReferences(value) {
+		for (const ref of this.objectReferences(value)) {
+			const type = this.routeType(ref.type)
+			const key = this.cacheKey(type, ref.id)
+			if (!this.liveObjects.has(key)) {
+				this.subscribeLive({ kind: "object", type, id: ref.id })
+			}
+		}
+		return this
+	}
+
+	objectReferences(value, found = []) {
+		if (Array.isArray(value)) {
+			for (const item of value) {
+				this.objectReferences(item, found)
+			}
+		} else if (this.isObjectExport(value)) {
+			found.push({ type: value.type, id: value.id })
+		} else if (value && typeof value === "object") {
+			for (const item of Object.values(value)) {
+				this.objectReferences(item, found)
+			}
+		}
+		return found
+	}
+
+	subscribeLive(target) {
+		if (!this.live || !this.EventSource) {
+			return Promise.resolve(undefined)
+		}
+		const key = JSON.stringify(target)
+		if (this.liveSubscriptions.has(key)) {
+			return this.liveReady || Promise.resolve(undefined)
+		}
+		this.liveSubscriptions.add(key)
+		return this.connectLive().then(() => {
+			this.sendLiveCommands([
+				{ op: "subscribe", target },
+			])
+		}).catch((error) => {
+			this.liveSubscriptions.delete(key)
+			this.reportLiveError(error)
+		})
+	}
+
+	async connectLive() {
+		if (!this.live || !this.EventSource) {
+			return undefined
+		}
+		if (this.liveChannel) {
+			return this.liveChannel
+		}
+		if (this.liveReady) {
+			return await this.liveReady
+		}
+		this.liveReady = this.request("POST", this.livePath).then((channel) => {
+			this.liveChannel = channel
+			this.openLiveSource(channel)
+			this.scheduleLiveHeartbeat()
+			return channel
+		}).catch((error) => {
+			this.liveReady = undefined
+			throw error
+		})
+		return await this.liveReady
+	}
+
+	openLiveSource(channel) {
+		if (this.liveSource) {
+			this.liveSource.close()
+		}
+		const events = channel.events || `${this.livePath}/${channel.id}/events`
+		this.liveSource = new this.EventSource(this.url(events))
+		for (const name of ["create", "update", "remove"]) {
+			this.liveSource.addEventListener(name, (event) => this.onLiveEvent(name, event))
+		}
+		this.liveSource.addEventListener("ping", () => this.scheduleLiveHeartbeat())
+		this.liveSource.addEventListener("error", (event) => this.reportLiveError(event))
+		return this.liveSource
+	}
+
+	sendLiveCommands(commands) {
+		if (!this.liveChannel) {
+			return this
+		}
+		if (!Array.isArray(commands) || !commands.length) {
+			return this
+		}
+		this.liveCommandQueue.push(...commands)
+		this.scheduleLiveCommands()
+		return this
+	}
+
+	scheduleLiveCommands() {
+		if (this.liveCommandTimer !== undefined) {
+			clearTimeout(this.liveCommandTimer)
+		}
+		if (!this.live || !this.liveChannel || !this.liveCommandQueue.length) {
+			this.liveCommandTimer = undefined
+			return this
+		}
+		this.liveCommandTimer = setTimeout(() => {
+			this.liveCommandTimer = undefined
+			this.flushLiveCommands().catch((error) => this.reportLiveError(error))
+		}, Math.max(0, this.liveCommandDelay))
+		return this
+	}
+
+	async flushLiveCommands() {
+		if (!this.liveChannel || !this.liveCommandQueue.length) {
+			return undefined
+		}
+		const commands = this.liveCommandQueue
+		this.liveCommandQueue = []
+		const path = this.liveChannel.commands || `${this.livePath}/${this.liveChannel.id}/commands`
+		try {
+			return await this.request("POST", path, { commands })
+		} catch (error) {
+			this.liveCommandQueue = commands.concat(this.liveCommandQueue)
+			throw error
+		} finally {
+			if (this.liveCommandQueue.length) {
+				this.scheduleLiveCommands()
+			}
+		}
+	}
+
+	onLiveEvent(name, event) {
+		let data
+		try {
+			data = event.data ? JSON.parse(event.data) : {}
+		} catch (error) {
+			this.reportLiveError(error)
+			return this
+		}
+		if (data.value && this.isObjectExport(data.value)) {
+			const object = this.hydrate(data.value, data.target && data.target.type)
+			this.trackObject(object)
+		} else if (data.type !== undefined && data.id !== undefined) {
+			const object = this.objects.get(this.cacheKey(this.routeType(data.type), data.id))
+			if (object && name === "remove") {
+				object.emitChange(object.snapshot(), "remote")
+			}
+		}
+		if (data.relations) {
+			for (const relation of Object.values(data.relations)) {
+				this.trackReferences(relation.added || [])
+			}
+		}
+		return this
+	}
+
+	scheduleLiveHeartbeat() {
+		if (this.liveHeartbeatTimer !== undefined) {
+			clearTimeout(this.liveHeartbeatTimer)
+		}
+		if (!this.live || !this.liveChannel || !this.liveHeartbeat) {
+			this.liveHeartbeatTimer = undefined
+			return this
+		}
+		this.liveHeartbeatTimer = setTimeout(() => {
+			this.sendLiveHeartbeat().catch((error) => this.reportLiveError(error))
+		}, this.liveHeartbeat)
+		return this
+	}
+
+	async sendLiveHeartbeat() {
+		if (!this.liveChannel) {
+			return undefined
+		}
+		const path = this.liveChannel.heartbeat || `${this.livePath}/${this.liveChannel.id}/heartbeat`
+		const res = await this.request("POST", path)
+		this.scheduleLiveHeartbeat()
+		return res
+	}
+
+	dispose() {
+		if (this.pushTimer !== undefined) {
+			clearTimeout(this.pushTimer)
+			this.pushTimer = undefined
+		}
+		if (this.liveCommandTimer !== undefined) {
+			clearTimeout(this.liveCommandTimer)
+			this.liveCommandTimer = undefined
+		}
+		if (this.liveHeartbeatTimer !== undefined) {
+			clearTimeout(this.liveHeartbeatTimer)
+			this.liveHeartbeatTimer = undefined
+		}
+		this.closeLive()
+		return this
+	}
+
+	closeLive() {
+		if (this.liveSource) {
+			this.liveSource.close()
+			this.liveSource = undefined
+		}
+		if (this.liveCommandTimer !== undefined) {
+			clearTimeout(this.liveCommandTimer)
+			this.liveCommandTimer = undefined
+		}
+		this.liveCommandQueue = []
+		const channel = this.liveChannel
+		this.liveChannel = undefined
+		this.liveReady = undefined
+		this.liveSubscriptions.clear()
+		if (channel) {
+			const path = this.url(channel.close || `${this.livePath}/${channel.id}/close`)
+			if (globalThis.navigator && typeof globalThis.navigator.sendBeacon === "function") {
+				globalThis.navigator.sendBeacon(path, "")
+			} else {
+				this.fetch.call(globalThis, path, { method: "POST", keepalive: true }).catch(() => undefined)
+			}
+		}
+		return this
+	}
+
+	setupDisposeHandler() {
+		if (this.liveDisposeHandler || typeof globalThis.addEventListener !== "function") {
+			return this
+		}
+		this.liveDisposeHandler = () => this.dispose()
+		globalThis.addEventListener("pagehide", this.liveDisposeHandler)
+		return this
+	}
+
+	reportLiveError(error) {
+		if (globalThis.console && globalThis.console.error) {
+			globalThis.console.error(error)
+		}
+		return this
+	}
+
+	queuePush(object, options = {}) {
+		if (!object.fields.hasChanges()) {
+			this.cancelPush(object)
+			return object
+		}
+		if (!this.autoPush && !options.force) {
+			return object
+		}
+		const delay = options.delay === undefined ? this.autoPushDelay : options.delay
+		this.pushQueue.set(this.cacheKey(object.routeType, object.id), {
+			object,
+			dueAt: Date.now() + Math.max(0, delay),
+		})
+		this.schedulePush()
+		return object
+	}
+
+	cancelPush(object) {
+		this.pushQueue.delete(this.cacheKey(object.routeType, object.id))
+		this.schedulePush()
+		return object
+	}
+
+	pending() {
+		return [...this.pushQueue.values()].map((_) => _.object)
+	}
+
+	schedulePush() {
+		if (this.pushTimer !== undefined) {
+			clearTimeout(this.pushTimer)
+			this.pushTimer = undefined
+		}
+		if (!this.autoPush || !this.pushQueue.size) {
+			return this
+		}
+		let dueAt = Infinity
+		for (const item of this.pushQueue.values()) {
+			dueAt = Math.min(dueAt, item.dueAt)
+		}
+		this.pushTimer = setTimeout(() => {
+			this.pushTimer = undefined
+			this.flushDue().catch((error) => {
+				if (globalThis.console && globalThis.console.error) {
+					globalThis.console.error(error)
+				}
+			})
+		}, Math.max(0, dueAt - Date.now()))
+		return this
+	}
+
+	async flushDue(now = Date.now()) {
+		const objects = []
+		for (const [key, item] of this.pushQueue.entries()) {
+			if (item.dueAt <= now) {
+				this.pushQueue.delete(key)
+				objects.push(item.object)
+			}
+		}
+		try {
+			return await this.pushObjects(objects)
+		} finally {
+			this.schedulePush()
+		}
+	}
+
+	async flush() {
+		const objects = this.pending()
+		this.pushQueue.clear()
+		try {
+			return await this.pushObjects(objects)
+		} finally {
+			this.schedulePush()
+		}
+	}
+
+	async pushObjects(objects) {
+		const pending = objects.filter((_) => _.fields.hasChanges())
+		if (!pending.length) {
+			return []
+		}
+		if (this.autoPushBatch && !this.batchUnsupported && pending.length > 1) {
+			try {
+				return await this.pushObjectsBatch(pending)
+			} catch (error) {
+				if (!(error instanceof StorageBridgeError && error.status === 404)) {
+					for (const object of pending) {
+						this.queuePush(object)
+					}
+					throw error
+				}
+				this.batchUnsupported = true
+			}
+		}
+		return await this.pushObjectsIndividually(pending)
+	}
+
+	async pushObjectsBatch(objects) {
+		const items = objects.map((object) => ({
+			object,
+			changes: object.fields.changes(),
+		}))
+		const commands = items.map((item) => ({
+			op: "update",
+			type: item.object.routeType,
+			id: item.object.id,
+			fields: item.changes,
+		}))
+		const response = await this.request("POST", this.commandPath, { commands })
+		const results = response && Array.isArray(response.results) ? response.results : []
+		for (let index = 0; index < items.length; index += 1) {
+			const item = items[index]
+			const result = results[index]
+			if (result && result.ok) {
+				item.object.apply(result.value, "remote", { acknowledged: item.changes })
+				if (item.object.fields.hasChanges()) {
+					this.queuePush(item.object)
+				}
+			} else {
+				this.queuePush(item.object)
+			}
+		}
+		return results
+	}
+
+	async pushObjectsIndividually(objects) {
+		const results = []
+		const errors = []
+		for (const object of objects) {
+			try {
+				results.push(await object.pushChanges(object.fields.changes()))
+			} catch (error) {
+				this.queuePush(object)
+				errors.push(error)
+			}
+		}
+		if (errors.length) {
+			const error = errors[0]
+			error.errors = errors
+			throw error
+		}
+		return results
 	}
 
 	async page(type, options = {}) {
@@ -424,6 +881,7 @@ class StoredObjectBridge {
 		const type = routeType || this.routeType(data.type)
 		const res = this.object(type, data.id)
 		res.apply(data, "remote")
+		this.trackObject(res)
 		return res
 	}
 
@@ -462,6 +920,10 @@ class StoredObjectBridge {
 	}
 
 	async request(method, path, body) {
+		const cacheKey = method === "GET" && body === undefined ? `${method}:${this.url(path)}` : undefined
+		if (cacheKey && this.inflightRequests.has(cacheKey)) {
+			return this.inflightRequests.get(cacheKey)
+		}
 		const init = {
 			method,
 			headers: { Accept: "application/json" },
@@ -470,18 +932,41 @@ class StoredObjectBridge {
 			init.headers["Content-Type"] = "application/json"
 			init.body = JSON.stringify(this.serialize(body))
 		}
-		const response = await this.fetch.call(globalThis, this.url(path), init)
-		const text = await response.text()
-		let data 
-		try {
-			data = text ? JSON.parse(text) : undefined
-		} catch (_) {
-			data = text
+		const pending = (async () => {
+			const response = await this.fetch.call(globalThis, this.url(path), init)
+			const text = await response.text()
+			let data
+			try {
+				data = text ? JSON.parse(text) : undefined
+			} catch (_) {
+				data = text
+			}
+			if (!response.ok) {
+				throw new StorageBridgeError(this.errorMessage(response, data), response, data)
+			}
+			return data
+		})()
+		if (!cacheKey) {
+			return pending
 		}
-		if (!response.ok) {
-			throw new StorageBridgeError(`Storage request failed: ${response.status}`, response, data)
+		let tracked
+		tracked = pending.finally(() => {
+			if (this.inflightRequests.get(cacheKey) === tracked) {
+				this.inflightRequests.delete(cacheKey)
+			}
+		})
+		this.inflightRequests.set(cacheKey, tracked)
+		return tracked
+	}
+
+	errorMessage(response, data) {
+		if (data && typeof data === "object") {
+			const code = data.errno ? `${data.errno}: ` : ""
+			const error = data.error || `Storage request failed: ${response.status}`
+			const problem = data.problem ? ` ${data.problem}` : ""
+			return `${code}${error}${problem}`
 		}
-		return data
+		return `Storage request failed: ${response.status}`
 	}
 
 	typePath(type) {
@@ -569,6 +1054,15 @@ class StoredObjectBridge {
 			protocol: options.protocol,
 			url: options.url,
 			fetch: options.fetch || globalThis.fetch,
+			autoPush: options.autoPush === undefined ? true : !!options.autoPush,
+			autoPushDelay: options.autoPushDelay === undefined ? DEFAULT_AUTO_PUSH_DELAY : options.autoPushDelay,
+			autoPushBatch: options.autoPushBatch === undefined ? true : !!options.autoPushBatch,
+			commandPath: options.commandPath === undefined ? "commands" : options.commandPath,
+			live: options.live === undefined ? true : !!options.live,
+			livePath: options.livePath === undefined ? "channel" : options.livePath,
+			liveCommandDelay: options.liveCommandDelay === undefined ? DEFAULT_LIVE_COMMAND_DELAY : options.liveCommandDelay,
+			liveHeartbeat: options.liveHeartbeat === undefined ? DEFAULT_LIVE_HEARTBEAT : options.liveHeartbeat,
+			EventSource: options.EventSource || globalThis.EventSource,
 		}
 	}
 

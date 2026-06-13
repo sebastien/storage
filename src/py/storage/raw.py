@@ -142,6 +142,14 @@ class StoredRaw(Storable):
 		return cls._ensureStorage().get(cls.StorageKey(id))
 
 	@classmethod
+	def Export(cls, id, **options):
+		"""Returns the stored raw payload, or a transient placeholder if missing."""
+		obj = cls.Get(id)
+		if obj:
+			return obj.export(**options)
+		return {"id": id, "type": getCanonicalName(cls)}
+
+	@classmethod
 	def Ensure(cls, id):
 		res = cls.Get(id)
 		if res is None:
