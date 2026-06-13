@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `storage.web` module exposes storable classes (`StoredObject` and `StoredRaw`) over HTTP as a REST-like JSON API. It integrates with the `extra` microservice framework to automatically handle requests, load data payloads, handle pagination, invoke custom domain methods, and stream binary file data.
+The `storage.web` module exposes storable classes (`StoredObject` and `StoredRaw`) over HTTP as a REST-like JSON API. It integrates with the `extra` microservice framework to automatically handle requests, load data payloads, handle pagination, invoke custom domain methods, manage relations, and stream binary file data.
 
 ## Decorators
 
@@ -90,18 +90,126 @@ server.add(AnotherStorableClass)
 
 ### Event Callbacks
 
-`StorageServer` allows subscribing to storage updates.
+`StorageServer` does not invoke a zero-argument callback. Updates are delivered as SSE events from a storage channel.
 
-```python
-def handle_updates():
-	print("Data has been updated!")
+Create a channel, subscribe to a target, then read events from `channel/{id}/events`:
 
-# Subscribe to update events
-server.onUpdate(handle_updates)
-
-# Unsubscribe
-server.offUpdate(handle_updates)
+```json
+{
+	"id": "...",
+	"events": "channel/.../events",
+	"commands": "channel/.../commands",
+	"heartbeat": "channel/.../heartbeat",
+	"close": "channel/.../close"
+}
 ```
+
+Subscribe with a channel command:
+
+```json
+{
+	"commands": [
+		{
+			"op": "subscribe",
+			"target": {
+				"kind": "object",
+				"type": "items",
+				"id": "123"
+			}
+		}
+	]
+}
+```
+
+Whole-channel buffering is controlled through the same endpoint:
+
+```json
+{
+	"commands": [
+		{"op": "block"},
+		{"op": "flush"},
+		{"op": "unblock"}
+	]
+}
+```
+
+`block` starts buffering notifications for the whole channel. `flush` emits the buffered changes as a single `batch` SSE event and keeps the channel blocked. `unblock` emits any remaining buffered changes as one `batch` event and resumes immediate delivery.
+
+Each event payload includes the data needed to see what changed:
+
+```json
+{
+	"event": "update",
+	"seq": 12,
+	"operation": "+",
+	"key": "items:123",
+	"type": "items",
+	"id": "123",
+	"revision": {"...": "..."},
+	"patch": [
+		{"op": "replace", "path": "/name", "value": "New name"}
+	],
+	"relations": {
+		"tags": {
+			"added": [{"id": "7", "type": "Tag"}],
+			"removed": [{"id": "2", "type": "Tag"}]
+		}
+	},
+	"entry": {"...": "..."},
+	"target": {"kind": "object", "type": "items", "id": "123"},
+	"value": {"id": "123", "type": "items"}
+}
+```
+
+Transactional command batches and blocked channels emit a `batch` event instead of individual `create`/`update`/`remove` events:
+
+```json
+{
+	"count": 2,
+	"changed": ["items:123"],
+	"from": 12,
+	"to": 13,
+	"events": [
+		{"event": "update", "id": "123", "type": "items"},
+		{"event": "update", "id": "123", "type": "items"}
+	]
+}
+```
+
+Field meanings:
+
+* `event`: `create`, `update`, `remove`, or `batch`
+* `operation`: journal operation from `Operation` (`=`, `+`, `-`, `+R`)
+* `patch`: JSON-patch-like field changes (`add`, `remove`, `replace`)
+* `relations`: relation diffs with `added` and `removed` object references
+* `value`: current object value when the backend can still fetch it
+
+### Command Endpoint
+
+`POST /api/commands` accepts mutating REST operations in command form:
+
+```json
+{
+	"transaction": true,
+	"commands": [
+		{"op": "create", "type": "items", "fields": {"value": "alpha"}},
+		{"op": "update", "type": "items", "id": "123", "fields": {"value": "beta"}},
+		{"op": "remove", "type": "items", "id": "123"},
+		{"op": "relation.append", "type": "items", "id": "123", "relation": "tags", "values": [{"id": "7"}]},
+		{"op": "invoke", "type": "items", "id": "123", "method": "rename", "body": {"value": "gamma"}}
+	]
+}
+```
+
+Supported command operations mirror the mutating REST API:
+
+* `create`
+* `update`
+* `remove`
+* `relation.set`, `relation.append`, `relation.prepend`, `relation.insert`, `relation.delete`, `relation.remove`, `relation.swap`, `relation.move`, `relation.clear`
+* `invoke` for custom `POST` methods exposed through `@http(...)`
+
+When `transaction` is `true`, update notifications are deferred until the request completes and then delivered as a single `batch` event per subscribed channel.
 
 ---
 
@@ -117,6 +225,11 @@ When a storable class `WebItem` is decorated with `@http("items")` and registere
 | `POST` | `/api/items/{id}/remove` | [Delete Object](#4-delete-object) |
 | `GET` | `/api/items/list` | [List/Paginate Objects](#5-list--pagination) |
 | `GET`/`POST` | `/api/items/{id}/{custom_method}` | [Invoke Custom Method](#6-custom-method-invocation) |
+| `GET` | `/api/items/{id}/relations` | [List Relations](#8-relation-listing) |
+| `GET` | `/api/items/{id}/relations/{name}/count` | [Relation Count](#9-relation-count) |
+| `GET` | `/api/items/{id}/relations/{name}/list` | [Relation List/Pagination](#10-relation-pagination-and-listing) |
+| `GET` | `/api/items/{id}/relations/{name}/list/{start}:{end}` | [Relation List/Pagination](#10-relation-pagination-and-listing) |
+| `POST` | `/api/items/{id}/relations/{name}/{operation}` | [Relation Mutation](#11-relation-mutation) |
 | `GET` | `/api/blobs/{id}/data` | [Retrieve Raw File Data](#7-raw-file-data-retrieval) *(StoredRaw only)* |
 
 ---
@@ -177,6 +290,25 @@ Only available on subclasses of `StoredRaw`.
 *   **Behavior:** Streams the raw binary file content from the backend path.
 *   **Content-Type Header:** Determined from metadata (uses `contentType` or `mimeType` in metadata, falling back to `application/x-binary`).
 
+#### 8. Relation Listing
+*   **Endpoints:** `GET /api/items/{id}/relations`
+*   **Behavior:** Returns the relation map for the object.
+
+#### 9. Relation Count
+*   **Endpoints:** `GET /api/items/{id}/relations/{name}/count`
+*   **Behavior:** Returns the number of values in a relation.
+
+#### 10. Relation Pagination and Listing
+*   **Endpoints:** `GET /api/items/{id}/relations/{name}/list`, `GET /api/items/{id}/relations/{name}/list/{start}:{end}`
+*   **Query Parameters:**
+    *   `resolve`, `depth`, `start`, `end`, `count`, `return`
+*   **Behavior:** Returns relation counts or paginated relation values.
+
+#### 11. Relation Mutation
+*   **Endpoints:** `POST /api/items/{id}/relations/{name}/{operation}`
+*   **Operations:** `set`, `append`, `prepend`, `insert`, `delete`, `remove`, `swap`, `move`, `clear`
+*   **Behavior:** Applies a relation update and returns the updated relation payload.
+
 ---
 
 ## Integration and Hosting
@@ -195,3 +327,58 @@ app.mount(server)
 # Start application server
 await app.start()
 ```
+
+---
+
+## JavaScript Bridge (`src/js/storage/object.js`)
+
+The JavaScript bridge mirrors the web API for browser and client-side usage. It exports `bridge()`, `StoredObjectBridge`, `StoredObject`, `StoredRelation`, `StoredType`, and `StorageBridgeError`.
+
+### Bridge Entry Point
+
+```js
+import bridge from "storage/object.js"
+
+const storage = bridge({ path: "/api" })
+```
+
+`bridge()` returns a singleton `StoredObjectBridge` and reconfigures it when called again with new options.
+
+### StoredObject
+
+`StoredObject` represents a remote object instance.
+
+Key methods:
+* `get(name)`, `set(name, value)`, `update(fields)`
+* `pull(options)`, `push()`, `pushChanges(changes)`, `remove()`
+* `call(name, data, options)` for custom methods
+* `relation(name)` to create a relation handle
+* `relations()` to fetch all relations for the object
+
+### StoredRelation
+
+`StoredRelation` wraps relation endpoints for a specific object and relation name.
+
+Key methods:
+* `count()`
+* `page(options)`, `list(options)`, `ilist(options)`, `all(options)`
+* `set(values, options)`
+* `append(values, options)`, `prepend(values, options)`, `insert(index, values, options)`
+* `delete(indexOrRange, options)`, `remove(values, options)`
+* `swap(a, b, options)`, `move(fromOrRange, to, options)`, `clear(options)`
+
+### StoredObjectBridge
+
+`StoredObjectBridge` provides the transport layer and object cache.
+
+Relevant methods:
+* `type(name)`, `ref(type, id, data)`, `object(type, id, data)`
+* `get(type, id, options)`, `create(type, fields)`
+* `page(type, options)`, `list(type, options)`, `ilist(type, options)`
+* `relations(type, id)`
+* `relationCount(type, id, name)`
+* `relationPage(type, id, name, options)`
+* `relationList(type, id, name, options)`
+* `relationOperation(type, id, name, operation, body, options)`
+
+The bridge also supports batched updates and live subscriptions for objects and relations.

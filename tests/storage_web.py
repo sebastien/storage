@@ -319,6 +319,208 @@ class StorageWebTest(unittest.TestCase):
 		self.assertEqual(result["received"]["field"], "")
 		self.assertEqual(result["context"]["index"], 0)
 
+	def testCommandsSupportCreateRelationInvokeAndRemove(self):
+		item = WebItem(value="alpha").save()
+		tag = WebTag(label="blue").save()
+		created_id = "tag-created"
+		response, payload = self.requestJSON(
+			"POST",
+			"/api/commands",
+			body=json.dumps(
+				{
+					"commands": [
+						{
+							"op": "create",
+							"type": "tags",
+							"fields": {"id": created_id, "label": "green"},
+						},
+						{
+							"op": "relation.append",
+							"type": "items",
+							"id": item.id,
+							"relation": "tags",
+							"values": [{"id": tag.id}],
+						},
+						{
+							"op": "invoke",
+							"type": "items",
+							"id": item.id,
+							"method": "rename",
+							"body": {"value": "gamma"},
+						},
+						{
+							"op": "remove",
+							"type": "tags",
+							"id": created_id,
+						},
+					],
+				}
+			),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertTrue(payload["results"][0]["ok"])
+		self.assertEqual(created_id, payload["results"][0]["id"])
+		self.assertEqual(1, payload["results"][1]["count"])
+		self.assertEqual(tag.id, payload["results"][1]["values"][0]["id"])
+		self.assertEqual("gamma", payload["results"][2]["value"]["value"])
+		self.assertTrue(payload["results"][3]["value"])
+		self.assertEqual("gamma", WebItem.Get(item.id).value)
+		self.assertFalse(WebTag.Has(created_id))
+
+	def testTransactionalCommandsEmitSingleBatchEvent(self):
+		self.objects.release()
+		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(WebItem, WebTag)
+		item = WebItem(value="alpha").save()
+		response, channel = self.requestJSON("POST", "/api/channel")
+		self.assertEqual(response.status, 200)
+
+		async def run():
+			async def post_json(path, data):
+				request = AWSLambdaEvent.AsRequest(
+					AWSLambdaEvent.Create(
+						"POST",
+						path,
+						body=json.dumps(data),
+						headers={"Content-Type": "application/json"},
+					)
+				)
+				response = self.app.process(request)
+				if not isinstance(response, HTTPResponse):
+					response = await response
+				return response
+
+			request = AWSLambdaEvent.AsRequest(
+				AWSLambdaEvent.Create("GET", f"/api/channel/{channel['id']}/events")
+			)
+			response = self.app.process(request)
+			if not isinstance(response, HTTPResponse):
+				response = await response
+			self.assertEqual(response.status, 200)
+			stream = response.body.stream
+			try:
+				ready = await anext(stream)
+				self.assertIn("event: ready", ready)
+				await post_json(
+					f"/api/channel/{channel['id']}/commands",
+					{
+						"commands": [
+							{
+								"op": "subscribe",
+								"target": {
+									"kind": "object",
+									"type": "items",
+									"id": item.id,
+								},
+							}
+						]
+					},
+				)
+				await post_json(
+					"/api/commands",
+					{
+						"transaction": True,
+						"commands": [
+							{
+								"op": "update",
+								"type": "items",
+								"id": item.id,
+								"fields": {"value": "beta"},
+							},
+							{
+								"op": "invoke",
+								"type": "items",
+								"id": item.id,
+								"method": "rename",
+								"body": {"value": "gamma"},
+							},
+						],
+					},
+				)
+				batch = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: batch", batch)
+				self.assertIn('"count":2', batch)
+				self.assertIn('"value":"gamma"', batch)
+			finally:
+				await stream.aclose()
+
+		asyncio.run(run())
+
+	def testChannelBlockFlushAndUnblock(self):
+		self.objects.release()
+		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(WebItem, WebTag)
+		item = WebItem(value="alpha").save()
+		response, channel = self.requestJSON("POST", "/api/channel")
+		self.assertEqual(response.status, 200)
+
+		async def run():
+			async def post_json(path, data):
+				request = AWSLambdaEvent.AsRequest(
+					AWSLambdaEvent.Create(
+						"POST",
+						path,
+						body=json.dumps(data),
+						headers={"Content-Type": "application/json"},
+					)
+				)
+				response = self.app.process(request)
+				if not isinstance(response, HTTPResponse):
+					response = await response
+				return response
+
+			request = AWSLambdaEvent.AsRequest(
+				AWSLambdaEvent.Create("GET", f"/api/channel/{channel['id']}/events")
+			)
+			response = self.app.process(request)
+			if not isinstance(response, HTTPResponse):
+				response = await response
+			stream = response.body.stream
+			try:
+				await anext(stream)
+				await post_json(
+					f"/api/channel/{channel['id']}/commands",
+					{
+						"commands": [
+							{
+								"op": "subscribe",
+								"target": {
+									"kind": "object",
+									"type": "items",
+									"id": item.id,
+								},
+							},
+							{"op": "block"},
+						]
+					},
+				)
+				item.value = "beta"
+				item.save()
+				await post_json(
+					f"/api/channel/{channel['id']}/commands",
+					{"commands": [{"op": "flush"}]},
+				)
+				batch = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: batch", batch)
+				self.assertIn('"count":1', batch)
+				item.value = "gamma"
+				item.save()
+				await post_json(
+					f"/api/channel/{channel['id']}/commands",
+					{"commands": [{"op": "unblock"}]},
+				)
+				batch = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: batch", batch)
+				self.assertIn('"value":"gamma"', batch)
+				item.value = "delta"
+				item.save()
+				update = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertTrue("event: update" in update or "event: create" in update)
+				self.assertIn('"value":"delta"', update)
+			finally:
+				await stream.aclose()
+
+		asyncio.run(run())
+
 	def testChannelSSEFromJournal(self):
 		self.objects.release()
 		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(WebItem)

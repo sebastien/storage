@@ -173,6 +173,24 @@ class JournalBackend(StorageBackend):
 		self.HAS_FILE = backend.HAS_FILE
 		self.HAS_RAW = backend.HAS_RAW
 		self.HAS_ORDERING = backend.HAS_ORDERING
+		self._deferredBatches = []
+
+	def beginBatch(self):
+		batch = dict(entries=[])
+		self._deferredBatches.append(batch)
+		return batch
+
+	def endBatch(self, batch=None):
+		if not self._deferredBatches:
+			return None
+		current = self._deferredBatches.pop()
+		if batch is not None and current is not batch:
+			raise ValueError("Journal batch mismatch")
+		if self._deferredBatches:
+			self._deferredBatches[-1]["entries"].extend(current.get("entries") or ())
+			return current
+		self._notifyBatch(current)
+		return current
 
 	def add(self, key, data):
 		old = self.backend.get(key) if self.backend.has(key) else None
@@ -294,7 +312,7 @@ class JournalBackend(StorageBackend):
 		if relations:
 			entry["relations"] = relations
 		self.persistence.append(entry)
-		self._notifyJournal(entry)
+		self._deferOrNotify(entry)
 		self._compactIfNeeded(key)
 		return entry
 
@@ -310,9 +328,15 @@ class JournalBackend(StorageBackend):
 			"meta": meta,
 		}
 		self.persistence.append(entry)
-		self._notifyJournal(entry)
+		self._deferOrNotify(entry)
 		self._compactIfNeeded(key)
 		return entry
+
+	def _deferOrNotify(self, entry):
+		if self._deferredBatches:
+			self._deferredBatches[-1]["entries"].append(entry)
+		else:
+			self._notifyJournal(entry)
 
 	def _notifyJournal(self, entry):
 		operation = entry.get("operation")
@@ -322,6 +346,32 @@ class JournalBackend(StorageBackend):
 				for callback in list(callbacks):
 					callback(key, operation, entry)
 		self.publish(operation, key, entry)
+
+	def _notifyBatch(self, batch):
+		entries = [entry for entry in batch.get("entries") or [] if entry]
+		if not entries:
+			return batch
+		payload = {
+			"entries": entries,
+			"count": len(entries),
+			"changed": self._changedKeys(entries, []),
+			"from": entries[0].get("seq"),
+			"to": entries[-1].get("seq"),
+		}
+		for sub_key, callbacks in list(self._subscribers.items()):
+			matches = [entry for entry in entries if self._subscriptionMatches(sub_key, entry.get("key"))]
+			if not matches:
+				continue
+			sub_payload = dict(payload)
+			sub_payload["entries"] = matches
+			sub_payload["count"] = len(matches)
+			sub_payload["changed"] = self._changedKeys(matches, [])
+			sub_payload["from"] = matches[0].get("seq")
+			sub_payload["to"] = matches[-1].get("seq")
+			for callback in list(callbacks):
+				callback(None, "batch", sub_payload)
+		self.publish("batch", None, payload)
+		return payload
 
 	def _subscriptionMatches(self, sub_key, key):
 		return sub_key in (None, "*") or sub_key == key or str(key).startswith(str(sub_key))

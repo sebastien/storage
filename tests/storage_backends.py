@@ -519,6 +519,20 @@ class JournalBackendTest(AbstractBackendTest, unittest.TestCase):
 		self.assertEqual(1, len(seen))
 		self.assertEqual("User.1", seen[0]["key"])
 
+	def testJournalBatchDefersNotifications(self):
+		seen = []
+		ops = []
+		self.backend.subscribe("User.", lambda key, operation, entry: (ops.append(operation), seen.append(entry)))
+		batch = self.backend.beginBatch()
+		self.backend.add("User.1", {"id": "1", "type": "User", "value": "A"})
+		self.backend.update("User.1", {"id": "1", "type": "User", "value": "B"})
+		self.assertEqual([], seen)
+		self.backend.endBatch(batch)
+		self.assertEqual(["batch"], ops)
+		self.assertEqual(1, len(seen))
+		self.assertEqual(2, seen[0]["count"])
+		self.assertEqual(["User.1"], seen[0]["changed"])
+
 	def testJournalCompaction(self):
 		self.backend.maxEntriesPerKey = 2
 		self.backend.add("User.1", {"id": "1", "type": "User", "value": "A"})

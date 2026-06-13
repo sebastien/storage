@@ -676,7 +676,7 @@ class StoredObjectBridge {
 		}
 		const events = channel.events || `${this.livePath}/${channel.id}/events`
 		this.liveSource = new this.EventSource(this.url(events))
-		for (const name of ["create", "update", "remove"]) {
+		for (const name of ["create", "update", "remove", "batch"]) {
 			this.liveSource.addEventListener(name, (event) => this.onLiveEvent(name, event))
 		}
 		this.liveSource.addEventListener("ping", () => this.scheduleLiveHeartbeat())
@@ -730,6 +730,21 @@ class StoredObjectBridge {
 		}
 	}
 
+	blockLive() {
+		this.sendLiveCommands([{ op: "block" }])
+		return this
+	}
+
+	flushLive() {
+		this.sendLiveCommands([{ op: "flush" }])
+		return this
+	}
+
+	unblockLive() {
+		this.sendLiveCommands([{ op: "unblock" }])
+		return this
+	}
+
 	onLiveEvent(name, event) {
 		let data
 		try {
@@ -738,6 +753,16 @@ class StoredObjectBridge {
 			this.reportLiveError(error)
 			return this
 		}
+		if (name === "batch") {
+			for (const item of data.events || []) {
+				this.onLiveData(item.event || "update", item)
+			}
+			return this
+		}
+		return this.onLiveData(name, data)
+	}
+
+	onLiveData(name, data) {
 		if (data.value && this.isObjectExport(data.value)) {
 			const object = this.hydrate(data.value, data.target?.type)
 			this.trackObject(object)
@@ -944,7 +969,7 @@ class StoredObjectBridge {
 			id: item.object.id,
 			fields: item.changes,
 		}))
-		const response = await this.request("POST", this.commandPath, { commands })
+		const response = await this.sendCommands(commands, { transaction: true })
 		const results = response && Array.isArray(response.results) ? response.results : []
 		for (let index = 0; index < items.length; index += 1) {
 			const item = items[index]
@@ -959,6 +984,14 @@ class StoredObjectBridge {
 			}
 		}
 		return results
+	}
+
+	async sendCommands(commands, options = {}) {
+		const payload = { commands }
+		if (options.transaction) {
+			payload.transaction = true
+		}
+		return await this.request("POST", this.commandPath, payload)
 	}
 
 	async pushObjectsIndividually(objects) {

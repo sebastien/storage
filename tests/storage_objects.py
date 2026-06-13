@@ -58,6 +58,19 @@ class StoredObjectTest(unittest.TestCase):
 		self.assertEqual(len(m.attachments), 0)
 		self.assertRaises(ValueError, m.attachments.append, a)
 
+	def testRelationSwap(self):
+		m = Message()
+		related = [Message(), Message(), Message()]
+		for item in related:
+			m.replyTo.append(item)
+
+		m.replyTo.swap(0, 2)
+
+		self.assertEqual(
+			[related[2].id, related[1].id, related[0].id],
+			[_.id for _ in m.replyTo],
+		)
+
 	def testCacheTransparency(self):
 		"""Ensures that if you won't have two different physical instances
 		(within the same process) for an object with the same id."""

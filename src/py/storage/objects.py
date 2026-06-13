@@ -779,6 +779,14 @@ class Relation:
 		self.values = [_ for _ in self.get(resolve=False) if not isSame(_, value)]
 		return self
 
+	def swap(self, a, b):
+		if not self.isMany():
+			raise RuntimeError("Cannot swap values in a single value relation")
+		if self.values is None:
+			self.values = []
+		self.values[a], self.values[b] = self.values[b], self.values[a]
+		return self
+
 	def clear(self):
 		self.values = []
 		return self

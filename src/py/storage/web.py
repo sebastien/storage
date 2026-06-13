@@ -136,6 +136,8 @@ class StorageChannel:
 		self.closed = False
 		self.attached = False
 		self.lastSeen = time.time()
+		self.blocked = False
+		self.pendingEvents = []
 		try:
 			self.loop = asyncio.get_running_loop()
 		except RuntimeError:
@@ -172,6 +174,18 @@ class StorageChannel:
 		elif op == "heartbeat":
 			self.touch()
 			return dict(ok=True, op=op)
+		elif op == "block":
+			self.blocked = True
+			self.touch()
+			return dict(ok=True, op=op, blocked=True)
+		elif op == "flush":
+			self.touch()
+			return dict(ok=True, op=op, blocked=True, batch=self.flushPending())
+		elif op == "unblock":
+			batch = self.flushPending()
+			self.blocked = False
+			self.touch()
+			return dict(ok=True, op=op, blocked=False, batch=batch)
 		elif op == "close":
 			self.close()
 			return dict(ok=True, op=op)
@@ -181,7 +195,7 @@ class StorageChannel:
 				"Unsupported storage channel command.",
 				"The storage channel command operation is not supported: %s." % op,
 				received=dict(op=op),
-				expected='Supported channel operations: "subscribe", "unsubscribe", "heartbeat", "close".',
+				expected='Supported channel operations: "subscribe", "unsubscribe", "heartbeat", "block", "flush", "unblock", "close".',
 			).payload(dict(operation="channel"))
 
 	def subscribe(self, target):
@@ -215,6 +229,15 @@ class StorageChannel:
 		return "%s:%s:%s" % (id(resolved.get("backend")), resolved.get("key"), json.dumps(target, sort_keys=True))
 
 	def notify(self, resolved, key, operation, entry):
+		if operation == "batch":
+			events = self.batchEntries(resolved, entry.get("entries") or [])
+			if not events:
+				return
+			if self.blocked:
+				self.pendingEvents.extend(events)
+			else:
+				self.enqueueBatch(events)
+			return
 		target = resolved.get("target") or {}
 		if target.get("kind") == "relation":
 			relations = entry.get("relations") or {}
@@ -225,7 +248,60 @@ class StorageChannel:
 		if operation != "-" and backend and backend.has(key):
 			data["value"] = backend.get(key)
 		data["target"] = target
-		self.enqueue(data.get("event", "update"), data, id=data.get("seq"))
+		if self.blocked:
+			self.pendingEvents.append(data)
+		else:
+			self.enqueue(data.get("event", "update"), data, id=data.get("seq"))
+
+	def batchEntries(self, resolved, entries):
+		res = []
+		for entry in entries:
+			key = entry.get("key")
+			operation = entry.get("operation")
+			target = resolved.get("target") or {}
+			if target.get("kind") == "relation":
+				relations = entry.get("relations") or {}
+				if target.get("name") not in relations:
+					continue
+			data = self.server.journalEvent(entry)
+			backend = resolved.get("backend")
+			if operation != "-" and backend and key is not None and backend.has(key):
+				data["value"] = backend.get(key)
+			data["target"] = target
+			res.append(data)
+		return res
+
+	def flushPending(self):
+		if not self.pendingEvents:
+			return dict(count=0, changed=[], events=[])
+		events = self.pendingEvents
+		self.pendingEvents = []
+		self.enqueueBatch(events)
+		return self.batchPayload(events)
+
+	def enqueueBatch(self, events):
+		if not events:
+			return self
+		payload = self.batchPayload(events)
+		self.enqueue("batch", payload, id=payload.get("to"))
+		return self
+
+	def batchPayload(self, events):
+		changed = []
+		seen = set()
+		for event in events:
+			key = event.get("key")
+			if key and key not in seen:
+				seen.add(key)
+				changed.append(key)
+		seqs = [event.get("seq") for event in events if event.get("seq") is not None]
+		return {
+			"count": len(events),
+			"changed": changed,
+			"from": seqs[0] if seqs else None,
+			"to": seqs[-1] if seqs else None,
+			"events": events,
+		}
 
 	def enqueue(self, event, data=None, id=None):
 		if self.closed:
@@ -266,6 +342,8 @@ class StorageChannel:
 	def close(self):
 		if self.closed:
 			return self
+		if self.pendingEvents:
+			self.flushPending()
 		self.closed = True
 		for sub in list(self.subscriptions.values()):
 			sub["backend"].unsubscribe(sub["key"], sub["callback"])
@@ -423,6 +501,7 @@ class StorageServer(Service):
 				dict(operation="commands"),
 			)
 		commands = data.get("commands") if isinstance(data, dict) else None
+		transaction = bool(data.get("transaction")) if isinstance(data, dict) else False
 		if not isinstance(commands, list):
 			return self.storageError(
 				request,
@@ -436,10 +515,21 @@ class StorageServer(Service):
 				dict(operation="commands"),
 			)
 		results = []
-		for index, command in enumerate(commands):
-			result = await self.onCommand(command, index=index)
-			results.append(result)
-		return request.returns(dict(results=results))
+		batches = []
+		try:
+			if transaction:
+				for backend in self.iterJournalBackends():
+					batches.append((backend, backend.beginBatch()))
+			for index, command in enumerate(commands):
+				result = await self.onCommand(command, index=index)
+				results.append(result)
+		finally:
+			for backend, batch in reversed(batches):
+				backend.endBatch(batch)
+		res = dict(results=results)
+		if transaction:
+			res["transaction"] = True
+		return request.returns(res)
 
 	async def onCommand(self, command, index=None):
 		if not isinstance(command, dict):
@@ -452,15 +542,23 @@ class StorageServer(Service):
 			).payload(dict(operation="commands", index=index))
 		op = command.get("op")
 		try:
-			if op == "update":
+			if op == "create":
+				return self.onCreateCommand(command, index=index)
+			elif op == "update":
 				return self.onUpdateCommand(command, index=index)
+			elif op == "remove":
+				return self.onRemoveCommand(command, index=index)
+			elif isinstance(op, str) and op.startswith("relation."):
+				return self.onRelationCommand(command, index=index)
+			elif op == "invoke":
+				return self.onInvokeCommand(command, index=index)
 			else:
 				return StorageWebError(
 					"BADOP",
 					"Unsupported storage command.",
 					"The storage command operation is not supported: %s." % op,
 					received=dict(op=op),
-					expected='Supported command operation: "update".',
+					expected='Supported command operations: "create", "update", "remove", "relation.*", "invoke".',
 				).payload(dict(operation="commands", index=index))
 		except StorageWebError as error:
 			return error.payload(dict(operation="commands", index=index, op=op))
@@ -474,20 +572,28 @@ class StorageServer(Service):
 				status=500,
 			).payload(dict(operation="commands", index=index, op=op))
 
+	def onCreateCommand(self, command, index=None):
+		match = self.commandMatch(command.get("type"))
+		storableClass, info = match
+		fields = command.get("fields")
+		if fields is not None:
+			self.validateUpdatePayload(fields, dict(type=info.getName(), index=index))
+			storable = storableClass.Import(fields).save()
+		else:
+			storable = storableClass()
+		return dict(
+			ok=True,
+			op="create",
+			type=info.getName(),
+			id=str(storable.id),
+			value=storable.export(**info.getExportOptions()),
+		)
+
 	def onUpdateCommand(self, command, index=None):
 		command_type = command.get("type")
 		sid = command.get("id")
 		fields = command.get("fields", {})
-		match = self.resolveStorable(command_type)
-		if not match:
-			raise StorageWebError(
-				"BADTYPE",
-				"Storage type not found.",
-				"No web storage type is registered for this command type.",
-				received=dict(type=command_type),
-				expected="A registered storage type or route name.",
-				status=404,
-			)
+		match = self.commandMatch(command_type)
 		if sid is None:
 			raise StorageWebError(
 				"NOID",
@@ -506,6 +612,227 @@ class StorageServer(Service):
 			id=str(sid),
 			value=storable.export(**info.getExportOptions()),
 		)
+
+	def onRemoveCommand(self, command, index=None):
+		match = self.commandMatch(command.get("type"))
+		sid = command.get("id")
+		if sid is None:
+			raise StorageWebError(
+				"NOID",
+				"Storage command id is required.",
+				"The remove command does not identify which object to remove.",
+				received=dict(id=sid),
+				expected='An "id" string in the remove command.',
+			)
+		storableClass, info = match
+		storable = storableClass.Get(str(sid))
+		if not storable:
+			raise StorageWebError(
+				"NOTFOUND",
+				"Storage object not found.",
+				"The remove command does not reference an existing object.",
+				received=dict(type=info.getName(), id=str(sid)),
+				expected="An existing storage object.",
+				status=404,
+			)
+		storable.remove()
+		return dict(ok=True, op="remove", type=info.getName(), id=str(sid), value=True)
+
+	def onRelationCommand(self, command, index=None):
+		op = str(command.get("op") or "")
+		operation = op.split(".", 1)[1] if "." in op else ""
+		match = self.commandMatch(command.get("type"))
+		sid = command.get("id")
+		name = command.get("relation")
+		if sid is None:
+			raise StorageWebError(
+				"NOID",
+				"Storage command id is required.",
+				"The relation command does not identify which object to update.",
+				received=dict(id=sid),
+				expected='An "id" string in the relation command.',
+			)
+		if not isinstance(name, str) or not name:
+			raise StorageWebError(
+				"BADRELATION",
+				"Storage relation not found.",
+				"The relation command must identify which relation to mutate.",
+				received=dict(relation=name),
+				expected='A relation name in the "relation" field.',
+				status=404,
+			)
+		storableClass, info = match
+		storable = storableClass.Get(str(sid))
+		if not storable:
+			raise StorageWebError(
+				"NOTFOUND",
+				"Storage object not found.",
+				"The relation command does not reference an existing object.",
+				received=dict(type=info.getName(), id=str(sid)),
+				expected="An existing storage object.",
+				status=404,
+			)
+		relation = self.getStorableRelation(storable, name)
+		data = self.commandPayload(command, exclude=("op", "type", "id", "relation", "return"))
+		self.validateRelationRevision(storable, name, data)
+		changed = self.applyRelationOperation(relation, operation, data)
+		if changed:
+			storable.save()
+		return_mode = command.get("return")
+		if return_mode == "none":
+			return dict(ok=True, operation=operation)
+			
+		if return_mode == "object":
+			return dict(
+				ok=True,
+				op=op,
+				type=info.getName(),
+				id=str(sid),
+				value=storable.export(**info.getExportOptions()),
+			)
+		page = self.relationPageData(storable, info, relation, name, command, operation=operation)
+		page["op"] = op
+		return page
+
+	def onInvokeCommand(self, command, index=None):
+		match = self.commandMatch(command.get("type"))
+		sid = command.get("id")
+		method_name = command.get("method")
+		if sid is None:
+			raise StorageWebError(
+				"NOID",
+				"Storage command id is required.",
+				"The invoke command does not identify which object to invoke.",
+				received=dict(id=sid),
+				expected='An "id" string in the invoke command.',
+			)
+		if not isinstance(method_name, str) or not method_name:
+			raise StorageWebError(
+				"BADMETHOD",
+				"Storage method not found.",
+				"The invoke command must identify which POST method to invoke.",
+				received=dict(method=method_name),
+				expected='A method name or route in the "method" field.',
+				status=404,
+			)
+		storableClass, info = match
+		storable = storableClass.Get(str(sid))
+		if not storable:
+			raise StorageWebError(
+				"NOTFOUND",
+				"Storage object not found.",
+				"The invoke command does not reference an existing object.",
+				received=dict(type=info.getName(), id=str(sid)),
+				expected="An existing storage object.",
+				status=404,
+			)
+		handler_name, _content_type = self.resolveInvocable(info, method_name, method="POST")
+		args, kwargs = self.invokeCommandArguments(command)
+		result = getattr(storable, handler_name)(*args, **kwargs)
+		return dict(
+			ok=True,
+			op="invoke",
+			type=info.getName(),
+			id=str(sid),
+			method=method_name,
+			value=result,
+		)
+
+	def commandMatch(self, command_type):
+		match = self.resolveStorable(command_type)
+		if not match:
+			raise StorageWebError(
+				"BADTYPE",
+				"Storage type not found.",
+				"No web storage type is registered for this command type.",
+				received=dict(type=command_type),
+				expected="A registered storage type or route name.",
+				status=404,
+			)
+		return match
+
+	def commandPayload(self, command, exclude=()):
+		fields = command.get("fields")
+		if fields is None:
+			fields = {k: v for k, v in command.items() if k not in exclude}
+		if not isinstance(fields, dict):
+			raise StorageWebError(
+				"BADPAYLOAD",
+				"Invalid storage command payload.",
+				"The storage command payload must be an object.",
+				received=self.describeValue(fields),
+				expected='A JSON object in "fields" or as top-level command fields.',
+			)
+		return dict(fields)
+
+	def iterJournalBackends(self):
+		seen = set()
+		for storableClass in self.storableClasses:
+			backend = self.journalBackend(storableClass)
+			if backend and id(backend) not in seen and hasattr(backend, "beginBatch"):
+				seen.add(id(backend))
+				yield backend
+
+	def resolveInvocable(self, info, method_name, method="POST"):
+		for name, meta in info.listInvocables():
+			invoke_url, _restrict, methods, contentType = meta
+			invoke_url = invoke_url[1:] if invoke_url.startswith("/") else invoke_url
+			allowed = (methods,) if isinstance(methods, str) else tuple(methods or ("GET", "POST"))
+			allowed = tuple(_.upper() for _ in allowed)
+			if method.upper() in allowed and method_name in (name, invoke_url):
+				return name, contentType
+		raise StorageWebError(
+			"BADMETHOD",
+			"Storage method not found.",
+			"The requested storage method is not exposed for this command.",
+			received=dict(method=method_name),
+			expected="A POST-exposed storage method.",
+			status=404,
+		)
+
+	def invokeCommandArguments(self, command):
+		if "args" in command:
+			args = command.get("args") or []
+			if not isinstance(args, list):
+				raise StorageWebError(
+					"BADPAYLOAD",
+					"Invalid storage method payload.",
+					"The invoke command args payload must be a list.",
+					received=self.describeValue(args),
+					expected='A JSON list in the "args" field.',
+				)
+			kwargs = command.get("kwargs") or {}
+		elif "kwargs" in command:
+			args = []
+			kwargs = command.get("kwargs") or {}
+		else:
+			body = command.get("body")
+			if isinstance(body, list):
+				args = body
+				kwargs = {}
+			elif isinstance(body, dict):
+				args = []
+				kwargs = body
+			elif body is None:
+				args = []
+				kwargs = {}
+			else:
+				raise StorageWebError(
+					"BADPAYLOAD",
+					"Invalid storage method payload.",
+					"The invoke command body must be a JSON object, list, or omitted.",
+					received=self.describeValue(body),
+					expected='A JSON object in "body", a JSON list in "body", or explicit "args"/"kwargs".',
+				)
+		if not isinstance(kwargs, dict):
+			raise StorageWebError(
+				"BADPAYLOAD",
+				"Invalid storage method payload.",
+				"The invoke command kwargs payload must be an object.",
+				received=self.describeValue(kwargs),
+				expected='A JSON object in the "kwargs" field.',
+			)
+		return [restore(_) for _ in args], dict((k, restore(v)) for k, v in kwargs.items())
 
 	def validateUpdatePayload(self, data, context=None):
 		if not isinstance(data, dict):
@@ -959,18 +1286,34 @@ class StorageServer(Service):
 		return storable.getRelation(name)
 
 	def relationPage(self, storable, info, relation, name, request, start=0, end=None, operation=None):
-		start = self.intParam(request, "start", start or 0)
-		if end is None:
-			end = self.intParam(request, "end", None)
-		count = self.intParam(request, "count", None)
+		return self.relationPageData(
+			storable,
+			info,
+			relation,
+			name,
+			dict(
+				start=self.intParam(request, "start", start or 0),
+				end=end if end is not None else self.intParam(request, "end", None),
+				count=self.intParam(request, "count", None),
+				resolve=self.boolParam(request, "resolve", False),
+				depth=self.intParam(request, "depth", 1),
+			),
+			operation=operation,
+		)
+
+	def relationPageData(self, storable, info, relation, name, options=None, operation=None):
+		options = dict(options or {})
+		start = self.intValue(options.get("start"), 0)
+		end = self.intValue(options.get("end"), None)
+		count = self.intValue(options.get("count"), None)
 		if end is None:
 			end = start + (count if count is not None else self.LIST_COUNT)
-		resolve = self.boolParam(request, "resolve", False)
-		depth = self.intParam(request, "depth", 1)
+		resolve = self.boolValue(options.get("resolve"), False)
+		depth = self.intValue(options.get("depth"), 1)
 		values = list(relation.get(start=start, limit=end, resolve=resolve))
-		options = info.getExportOptions()
-		options.update(dict(depth=depth))
-		res = [_.export(**options) if hasattr(_, "export") else _ for _ in values]
+		info_options = info.getExportOptions()
+		info_options.update(dict(depth=depth))
+		res = [_.export(**info_options) if hasattr(_, "export") else _ for _ in values]
 		return dict(
 			ok=True,
 			type=info.getName(),
@@ -1136,8 +1479,20 @@ class StorageServer(Service):
 			return default
 		return int(value)
 
+	def intValue(self, value, default=None):
+		if value is None or value == "":
+			return default
+		return int(value)
+
 	def boolParam(self, request, name, default=False):
 		value = request.param(name)
+		if value is None:
+			return default
+		if isinstance(value, str):
+			return value.lower() not in ("0", "false", "no", "off")
+		return bool(value)
+
+	def boolValue(self, value, default=False):
 		if value is None:
 			return default
 		if isinstance(value, str):
