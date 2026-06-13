@@ -68,7 +68,7 @@ class StoredAttributes {
 		return this.owner
 	}
 
-	shouldApply(name, value, acknowledged) {
+	shouldApply(name, _value, acknowledged) {
 		if (!this.dirty.has(name)) {
 			return true
 		}
@@ -210,6 +210,14 @@ class StoredObject {
 		return await this.bridge.invoke(this.routeType, this.id, name, data, options)
 	}
 
+	relation(name) {
+		return new StoredRelation(this, name)
+	}
+
+	async relations() {
+		return await this.bridge.relations(this.routeType, this.id)
+	}
+
 	routePath() {
 		return `${this.bridge.typePath(this.routeType)}/${this.bridge.idPath(this.id)}`
 	}
@@ -283,6 +291,86 @@ class StoredObject {
 			}
 		}
 		return delta
+	}
+}
+
+class StoredRelation {
+	constructor(owner, name) {
+		if (!name) {
+			throw new Error("StoredRelation requires a name")
+		}
+		this.owner = owner
+		this.bridge = owner.bridge
+		this.name = String(name)
+	}
+
+	async count() {
+		return await this.bridge.relationCount(this.owner.routeType, this.owner.id, this.name)
+	}
+
+	async page(options = {}) {
+		return await this.bridge.relationPage(this.owner.routeType, this.owner.id, this.name, options)
+	}
+
+	async list(options = {}) {
+		return await this.bridge.relationList(this.owner.routeType, this.owner.id, this.name, options)
+	}
+
+	async *ilist(options = {}) {
+		yield* this.bridge.irelation(this.owner.routeType, this.owner.id, this.name, options)
+	}
+
+	async all(options = {}) {
+		return await this.list(options)
+	}
+
+	async set(values, options = {}) {
+		return await this.operation("set", { values: this.asValues(values) }, options)
+	}
+
+	async append(values, options = {}) {
+		return await this.operation("append", { values: this.asValues(values) }, options)
+	}
+
+	async prepend(values, options = {}) {
+		return await this.operation("prepend", { values: this.asValues(values) }, options)
+	}
+
+	async insert(index, values, options = {}) {
+		return await this.operation("insert", { index, values: this.asValues(values) }, options)
+	}
+
+	async delete(indexOrRange, options = {}) {
+		const body = typeof indexOrRange === "object" ? { ...indexOrRange } : { index: indexOrRange }
+		return await this.operation("delete", body, options)
+	}
+
+	async remove(values, options = {}) {
+		return await this.operation("remove", { values: this.asValues(values) }, options)
+	}
+
+	async swap(a, b, options = {}) {
+		return await this.operation("swap", { a, b }, options)
+	}
+
+	async move(fromOrRange, to, options = {}) {
+		const body = typeof fromOrRange === "object" ? { ...fromOrRange } : { from: fromOrRange, to }
+		if (to !== undefined) {
+			body.to = to
+		}
+		return await this.operation("move", body, options)
+	}
+
+	async clear(options = {}) {
+		return await this.operation("clear", {}, options)
+	}
+
+	async operation(name, body = {}, options = {}) {
+		return await this.bridge.relationOperation(this.owner.routeType, this.owner.id, this.name, name, body, options)
+	}
+
+	asValues(values) {
+		return Array.isArray(values) ? values : [values]
 	}
 }
 
@@ -408,6 +496,10 @@ class StoredObjectBridge {
 		return await res.pull(options)
 	}
 
+	async relations(type, id) {
+		return await this.request("GET", `${this.typePath(type)}/${this.idPath(id)}/relations`)
+	}
+
 	alias(object, type, id) {
 		this.objects.set(this.cacheKey(type, id), object)
 		return object
@@ -432,6 +524,66 @@ class StoredObjectBridge {
 			data = undefined
 		}
 		return this.deserialize(await this.request(method, path, data))
+	}
+
+	async relationCount(type, id, name) {
+		return await this.request("GET", `${this.relationPath(type, id, name)}/count`)
+	}
+
+	async relationPage(type, id, name, options = {}) {
+		const start = options.start || 0
+		const count = options.count || DEFAULT_PAGE_SIZE
+		const end = options.end === undefined ? start + count : options.end
+		const query = this.relationQuery(options)
+		const data = await this.request("GET", `${this.relationPath(type, id, name)}/list/${start}:${end}${query}`)
+		return {
+			start: data.start,
+			end: data.end,
+			count: data.count,
+			total: data.total,
+			revision: data.revision,
+			values: (data.values || []).map((_) => this.deserialize(_)),
+		}
+	}
+
+	async relationList(type, id, name, options = {}) {
+		const res = []
+		for await (const object of this.irelation(type, id, name, options)) {
+			res.push(object)
+		}
+		return res
+	}
+
+	async *irelation(type, id, name, options = {}) {
+		const count = options.count || DEFAULT_PAGE_SIZE
+		let start = options.start || 0
+		const limit = options.limit === undefined ? Infinity : options.limit
+		let yielded = 0
+		while (yielded < limit) {
+			const end = Math.min(start + count, start + (limit - yielded))
+			const page = await this.relationPage(type, id, name, { ...options, start, end, count })
+			for (const object of page.values) {
+				yield object
+				yielded += 1
+				if (yielded >= limit) {
+					return
+				}
+			}
+			if (!page.count || page.count < count) {
+				return
+			}
+			start = page.end === undefined ? start + count : page.end
+		}
+	}
+
+	async relationOperation(type, id, name, operation, body = {}, options = {}) {
+		const data = { ...body }
+		if (options.revision !== undefined && data.revision === undefined) {
+			data.revision = options.revision
+		}
+		const query = this.relationQuery(options, new Set(["revision"]))
+		const response = await this.request("POST", `${this.relationPath(type, id, name)}/${encodeURIComponent(String(operation))}${query}`, data)
+		return this.deserialize(response)
 	}
 
 	trackObject(object) {
@@ -587,7 +739,7 @@ class StoredObjectBridge {
 			return this
 		}
 		if (data.value && this.isObjectExport(data.value)) {
-			const object = this.hydrate(data.value, data.target && data.target.type)
+			const object = this.hydrate(data.value, data.target?.type)
 			this.trackObject(object)
 		} else if (data.type !== undefined && data.id !== undefined) {
 			const object = this.objects.get(this.cacheKey(this.routeType(data.type), data.id))
@@ -679,7 +831,7 @@ class StoredObjectBridge {
 	}
 
 	reportLiveError(error) {
-		if (globalThis.console && globalThis.console.error) {
+		if (globalThis.console?.error) {
 			globalThis.console.error(error)
 		}
 		return this
@@ -727,7 +879,7 @@ class StoredObjectBridge {
 		this.pushTimer = setTimeout(() => {
 			this.pushTimer = undefined
 			this.flushDue().catch((error) => {
-				if (globalThis.console && globalThis.console.error) {
+				if (globalThis.console?.error) {
 					globalThis.console.error(error)
 				}
 			})
@@ -797,7 +949,7 @@ class StoredObjectBridge {
 		for (let index = 0; index < items.length; index += 1) {
 			const item = items[index]
 			const result = results[index]
-			if (result && result.ok) {
+			if (result?.ok) {
 				item.object.apply(result.value, "remote", { acknowledged: item.changes })
 				if (item.object.fields.hasChanges()) {
 					this.queuePush(item.object)
@@ -917,6 +1069,21 @@ class StoredObjectBridge {
 			return res
 		}
 		return value
+	}
+
+	relationPath(type, id, name) {
+		return `${this.typePath(type)}/${this.idPath(id)}/relations/${encodeURIComponent(String(name))}`
+	}
+
+	relationQuery(options = {}, exclude = new Set()) {
+		const data = {}
+		for (const name of ["resolve", "depth", "start", "end", "count", "return"]) {
+			if (!exclude.has(name) && options[name] !== undefined) {
+				data[name] = options[name]
+			}
+		}
+		const query = this.queryString(data)
+		return query ? `?${query}` : ""
 	}
 
 	async request(method, path, body) {
@@ -1098,4 +1265,4 @@ function bridge(...args) {
 bridge.Singleton = undefined
 
 export default bridge
-export { StoredAttributes, StoredObjectBridge, StorageBridgeError, StoredObject, StoredType, bridge }
+export { StoredAttributes, StoredObjectBridge, StorageBridgeError, StoredObject, StoredRelation, StoredType, bridge }

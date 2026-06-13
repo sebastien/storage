@@ -18,6 +18,7 @@ from extra.model import Application
 @http("items")
 class WebItem(StoredObject):
 	PROPERTIES = dict(value=Types.STRING)
+	RELATIONS = lambda self: dict(tags=[WebTag])
 
 	@http("rename", methods="POST")
 	def rename(self, value):
@@ -30,6 +31,11 @@ class WebItem(StoredObject):
 		return {"value": prefix + self.value}
 
 
+@http("tags")
+class WebTag(StoredObject):
+	PROPERTIES = dict(label=Types.STRING)
+
+
 @http("blobs")
 class WebBlob(StoredRaw):
 	pass
@@ -38,9 +44,9 @@ class WebBlob(StoredRaw):
 class StorageWebTest(unittest.TestCase):
 	def setUp(self):
 		self.path = tempfile.mkdtemp(prefix="storage-web-")
-		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(WebItem)
+		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(WebItem, WebTag)
 		self.raw = RawStorage(DirectoryBackend(self.path)).use(WebBlob)
-		self.server = StorageServer(prefix="/api", classes=(WebItem, WebBlob))
+		self.server = StorageServer(prefix="/api", classes=(WebItem, WebTag, WebBlob))
 		self.app = Application()
 		self.app.mount(self.server)
 		asyncio.run(self.app.start())
@@ -159,6 +165,92 @@ class StorageWebTest(unittest.TestCase):
 		self.assertEqual(response.status, 200)
 		self.assertEqual(payload, b"payload")
 		self.assertEqual(response.headers.headers.get("Content-Type"), "text/plain")
+
+	def testRelationReadAndMutations(self):
+		tags = [WebTag(label=_).save() for _ in ("a", "b", "c", "d")]
+		item = WebItem(value="alpha", tags=tags[:2]).save()
+
+		response, relations = self.requestJSON("GET", f"/api/items/{item.id}/relations")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(2, relations["relations"]["tags"]["count"])
+
+		response, count = self.requestJSON("GET", f"/api/items/{item.id}/relations/tags/count")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(2, count["count"])
+
+		response, page = self.requestJSON("GET", f"/api/items/{item.id}/relations/tags/list/0:1")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(1, page["count"])
+		self.assertEqual(tags[0].id, page["values"][0]["id"])
+		self.assertNotIn("label", page["values"][0])
+
+		response, resolved = self.requestJSON("GET", f"/api/items/{item.id}/relations/tags/list/0:1?resolve=1")
+		self.assertEqual(response.status, 200)
+		self.assertEqual("a", resolved["values"][0]["label"])
+
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}/relations/tags/append",
+			body=json.dumps({"values": [{"id": tags[2].id, "type": "tags"}]}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual(3, page["total"])
+		self.assertEqual([_.id for _ in tags[:3]], [_.id for _ in WebItem.Get(item.id).tags])
+
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}/relations/tags/insert",
+			body=json.dumps({"index": 1, "values": [{"id": tags[3].id, "type": "tags"}]}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual([tags[0].id, tags[3].id, tags[1].id, tags[2].id], [_.id for _ in WebItem.Get(item.id).tags])
+
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}/relations/tags/swap",
+			body=json.dumps({"a": 0, "b": 2}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual([tags[1].id, tags[3].id, tags[0].id, tags[2].id], [_.id for _ in WebItem.Get(item.id).tags])
+
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}/relations/tags/move",
+			body=json.dumps({"from": 1, "to": 4}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual([tags[1].id, tags[0].id, tags[2].id, tags[3].id], [_.id for _ in WebItem.Get(item.id).tags])
+
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}/relations/tags/remove",
+			body=json.dumps({"values": [{"id": tags[0].id, "type": "tags"}]}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual([tags[1].id, tags[2].id, tags[3].id], [_.id for _ in WebItem.Get(item.id).tags])
+
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}/relations/tags/delete",
+			body=json.dumps({"index": 1}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual([tags[1].id, tags[3].id], [_.id for _ in WebItem.Get(item.id).tags])
+
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/items/{item.id}/relations/tags/clear",
+			body=json.dumps({}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual([], list(WebItem.Get(item.id).tags))
 
 	def testUpdateRejectsEmptyFieldNameWithStructuredError(self):
 		item = WebItem(value="alpha").save()

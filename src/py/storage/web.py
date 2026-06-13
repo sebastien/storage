@@ -18,7 +18,7 @@ except ImportError:
 	from extra import HTTPRequest, HTTPResponse, Service
 	from extra.routing import Handler
 
-from .core import Storable, restore
+from .core import Storable, getCanonicalName, isSame, restore
 from .raw import StoredRaw
 
 
@@ -855,6 +855,295 @@ class StorageServer(Service):
 		res = [_.export(**options) for _ in storableClass.List(start=start, end=end)]
 		return request.returns(dict(start=start, end=end, count=len(res), values=res))
 
+	def onStorableRelations(self, storableClass, info, request, sid):
+		sid = unquote(sid)
+		storable = storableClass.Get(sid)
+		if not storable:
+			return request.notFound()
+		res = {}
+		for name, relation in storable.iterRelations() if hasattr(storable, "iterRelations") else ():
+			relationClass = relation.getRelationClass()
+			res[name] = dict(
+				many=relation.isMany(),
+				type=getCanonicalName(relationClass),
+				count=len(relation),
+				revision=storable.getUpdateTime(name),
+			)
+		return request.returns(dict(type=info.getName(), id=sid, relations=res))
+
+	def onStorableRelationCount(self, storableClass, info, request, sid, name):
+		sid = unquote(sid)
+		storable = storableClass.Get(sid)
+		if not storable:
+			return request.notFound()
+		try:
+			relation = self.getStorableRelation(storable, name)
+		except StorageWebError as error:
+			return self.storageError(request, error, dict(type=info.getName(), id=sid))
+		return request.returns(
+			dict(
+				type=info.getName(),
+				id=sid,
+				relation=name,
+				count=len(relation),
+				revision=storable.getUpdateTime(name),
+			)
+		)
+
+	def onStorableRelationGet(self, storableClass, info, request, sid, name, start=0, end=None):
+		sid = unquote(sid)
+		storable = storableClass.Get(sid)
+		if not storable:
+			return request.notFound()
+		try:
+			relation = self.getStorableRelation(storable, name)
+		except StorageWebError as error:
+			return self.storageError(request, error, dict(type=info.getName(), id=sid))
+		return request.returns(
+			self.relationPage(storable, info, relation, name, request, start=start, end=end)
+		)
+
+	async def onStorableRelationOperation(
+		self, storableClass, info, request, sid, name, operation
+	):
+		if self.readonly:
+			return request.notAuthorized()
+		sid = unquote(sid)
+		storable = storableClass.Get(sid)
+		if not storable:
+			return request.notFound()
+		try:
+			data = await request.loadParams()
+			relation = self.getStorableRelation(storable, name)
+			self.validateRelationRevision(storable, name, data)
+			changed = self.applyRelationOperation(relation, operation, data)
+			if changed:
+				storable.save()
+		except StorageWebError as error:
+			return self.storageError(
+				request,
+				error,
+				dict(type=info.getName(), id=sid, relation=name, operation=operation),
+			)
+		except ValueError as error:
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADPAYLOAD",
+					"Invalid storage relation payload.",
+					str(error),
+					received=self.describeRequest(request),
+					expected="A JSON or form object with valid relation operation arguments.",
+				),
+				dict(type=info.getName(), id=sid, relation=name, operation=operation),
+			)
+		if request.param("return") == "none":
+			return request.returns(dict(ok=True, operation=operation))
+		if request.param("return") == "object":
+			return request.returns(storable.export(**info.getExportOptions()))
+		return request.returns(
+			self.relationPage(storable, info, relation, name, request, operation=operation)
+		)
+
+	def getStorableRelation(self, storable, name):
+		relations = getattr(storable.__class__, "RELATIONS", {}) or {}
+		if name not in relations or not hasattr(storable, "getRelation"):
+			raise StorageWebError(
+				"BADRELATION",
+				"Storage relation not found.",
+				"The requested relation is not declared on this storage type.",
+				received=dict(relation=name),
+				expected="One of: %s" % sorted(relations.keys()),
+				status=404,
+			)
+		return storable.getRelation(name)
+
+	def relationPage(self, storable, info, relation, name, request, start=0, end=None, operation=None):
+		start = self.intParam(request, "start", start or 0)
+		if end is None:
+			end = self.intParam(request, "end", None)
+		count = self.intParam(request, "count", None)
+		if end is None:
+			end = start + (count if count is not None else self.LIST_COUNT)
+		resolve = self.boolParam(request, "resolve", False)
+		depth = self.intParam(request, "depth", 1)
+		values = list(relation.get(start=start, limit=end, resolve=resolve))
+		options = info.getExportOptions()
+		options.update(dict(depth=depth))
+		res = [_.export(**options) if hasattr(_, "export") else _ for _ in values]
+		return dict(
+			ok=True,
+			type=info.getName(),
+			id=storable.id,
+			relation=name,
+			operation=operation,
+			start=start,
+			end=end,
+			count=len(res),
+			total=len(relation),
+			revision=storable.getUpdateTime(name),
+			values=res,
+		)
+
+	def applyRelationOperation(self, relation, operation, data):
+		data = dict(data or {})
+		operation = str(operation or "")
+		many_ops = {"append", "prepend", "insert", "delete", "remove", "swap", "move"}
+		if not relation.isMany() and operation in many_ops:
+			raise StorageWebError(
+				"BADOP",
+				"Unsupported relation operation.",
+				"The requested operation requires a many-valued relation.",
+				received=dict(operation=operation),
+				expected='Use "set" or "clear" on single-valued relations.',
+			)
+		values = list(relation.get(resolve=False))
+		if operation == "set":
+			items = self.relationValues(relation, data)
+			if not relation.isMany() and len(items) > 1:
+				raise StorageWebError(
+					"TOOMANY",
+					"Too many relation values.",
+					"A single-valued relation cannot contain more than one value.",
+					received=dict(count=len(items)),
+					expected="Zero or one relation value.",
+				)
+			values = items
+		elif operation == "append":
+			values.extend(self.relationValues(relation, data))
+		elif operation == "prepend":
+			values = self.relationValues(relation, data) + values
+		elif operation == "insert":
+			index = self.relationIndex(data, "index", allowEnd=True, length=len(values))
+			values[index:index] = self.relationValues(relation, data)
+		elif operation == "delete":
+			start, end = self.relationRange(data, len(values), single=True)
+			del values[start:end]
+		elif operation == "remove":
+			items = self.relationValues(relation, data)
+			values = [_ for _ in values if not any(isSame(_, item) for item in items)]
+		elif operation == "swap":
+			a = self.relationIndex(data, "a", length=len(values))
+			b = self.relationIndex(data, "b", length=len(values))
+			values[a], values[b] = values[b], values[a]
+		elif operation == "move":
+			start, end = self.relationRange(data, len(values), names=("from", "end"), single=True)
+			to = self.relationIndex(data, "to", allowEnd=True, length=len(values))
+			chunk = values[start:end]
+			del values[start:end]
+			if to > start:
+				to -= len(chunk)
+			values[to:to] = chunk
+		elif operation == "clear":
+			values = []
+		else:
+			raise StorageWebError(
+				"BADOP",
+				"Unsupported relation operation.",
+				"The requested relation operation is not supported: %s." % operation,
+				received=dict(operation=operation),
+				expected='Supported operations: "set", "append", "prepend", "insert", "delete", "remove", "swap", "move", "clear".',
+			)
+		relation.set(values)
+		return True
+
+	def relationValues(self, relation, data):
+		values = data.get("values")
+		if values is None and "value" in data:
+			values = data.get("value")
+		if values is None:
+			values = []
+		elif not isinstance(values, (list, tuple)):
+			values = [values]
+		relationClass = relation.getRelationClass()
+		res = []
+		for value in values:
+			if isinstance(value, dict) and "id" in value:
+				value = dict(value)
+				value["type"] = getCanonicalName(relationClass)
+			res.append(value)
+		return res
+
+	def validateRelationRevision(self, storable, name, data):
+		if not isinstance(data, dict) or "revision" not in data:
+			return True
+		received = int(data.get("revision") or 0)
+		current = int(storable.getUpdateTime(name) or 0)
+		if received != current:
+			raise StorageWebError(
+				"CONFLICT",
+				"Relation was modified.",
+				"The relation revision does not match the current stored revision.",
+				received=dict(revision=received),
+				expected=dict(revision=current),
+				status=409,
+			)
+		return True
+
+	def relationRange(self, data, length, names=("start", "end"), single=False):
+		startName, endName = names
+		if single and "index" in data:
+			start = self.relationIndex(data, "index", length=length)
+			return start, start + 1
+		if single and startName in data and endName not in data:
+			start = self.relationIndex(data, startName, length=length)
+			return start, start + 1
+		start = self.relationIndex(data, startName, length=length)
+		end = self.relationIndex(data, endName, allowEnd=True, length=length)
+		if end < start:
+			raise StorageWebError(
+				"BADRANGE",
+				"Invalid relation range.",
+				"The relation range end must be greater than or equal to start.",
+				received=dict(start=start, end=end),
+				expected="A valid half-open range [start, end).",
+			)
+		return start, end
+
+	def relationIndex(self, data, name, allowEnd=False, length=0):
+		if name not in data:
+			raise StorageWebError(
+				"NOINDEX",
+				"Relation index is required.",
+				"The relation operation requires an integer index.",
+				received=dict(keys=list(data.keys())),
+				expected='An integer field named "%s".' % name,
+			)
+		try:
+			index = int(data.get(name))
+		except (TypeError, ValueError):
+			raise StorageWebError(
+				"BADINDEX",
+				"Invalid relation index.",
+				"Relation indexes must be integers.",
+				received=dict(index=data.get(name)),
+				expected="An integer index.",
+			)
+		maximum = length if allowEnd else length - 1
+		if index < 0 or index > maximum:
+			raise StorageWebError(
+				"INDEXRANGE",
+				"Relation index out of range.",
+				"The relation index is outside the current relation bounds.",
+				received=dict(index=index, length=length),
+				expected="An index between 0 and %s." % maximum,
+			)
+		return index
+
+	def intParam(self, request, name, default=None):
+		value = request.param(name)
+		if value is None or value == "":
+			return default
+		return int(value)
+
+	def boolParam(self, request, name, default=False):
+		value = request.param(name)
+		if value is None:
+			return default
+		if isinstance(value, str):
+			return value.lower() not in ("0", "false", "no", "off")
+		return bool(value)
+
 	def onRawGetData(self, storableClass, request, sid):
 		sid = unquote(sid)
 		storable = storableClass.Get(sid)
@@ -891,6 +1180,30 @@ class StorageServer(Service):
 		) -> HTTPResponse:
 			return self.onStorableList(storableClass, info, request, start, end)
 
+		def handler_relations(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return self.onStorableRelations(storableClass, info, request, sid)
+
+		def handler_relation_count(request: HTTPRequest, sid: str, name: str) -> HTTPResponse:
+			return self.onStorableRelationCount(storableClass, info, request, sid, name)
+
+		def handler_relation_get(
+			request: HTTPRequest,
+			sid: str,
+			name: str,
+			start: int = 0,
+			end: int | None = None,
+		) -> HTTPResponse:
+			return self.onStorableRelationGet(
+				storableClass, info, request, sid, name, start, end
+			)
+
+		async def handler_relation_operation(
+			request: HTTPRequest, sid: str, name: str, operation: str
+		) -> HTTPResponse:
+			return await self.onStorableRelationOperation(
+				storableClass, info, request, sid, name, operation
+			)
+
 		yield self._handler(handler_create, ("GET", url), ("POST", url))
 		yield self._handler(handler_update, ("POST", url + "/{sid:segment}"))
 		yield self._handler(handler_remove, ("POST", url + "/{sid:segment}/remove"))
@@ -899,6 +1212,14 @@ class StorageServer(Service):
 		yield self._handler(handler_list, ("GET", url + "/list/{start:int}"))
 		yield self._handler(handler_list, ("GET", url + "/list/{start:int}:"))
 		yield self._handler(handler_list, ("GET", url + "/list/{start:int}:{end:int}"))
+		yield self._handler(handler_relations, ("GET", url + "/{sid:segment}/relations"))
+		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}"))
+		yield self._handler(handler_relation_count, ("GET", url + "/{sid:segment}/relations/{name:segment}/count"))
+		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list"))
+		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}"))
+		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:"))
+		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:{end:int}"))
+		yield self._handler(handler_relation_operation, ("POST", url + "/{sid:segment}/relations/{name:segment}/{operation:segment}"))
 
 		for name, meta in info.listInvocables():
 			invoke_url, restrict, methods, contentType = meta

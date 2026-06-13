@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Iterable
 
 from . import StorageBackend
 from ..core import Operation, getTimestamp
