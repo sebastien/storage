@@ -365,6 +365,7 @@ class StorageServer(Service):
 		prefix = prefix + "/" if prefix else ""
 		Service.__init__(self, prefix=prefix)
 		self.storableClasses = []
+		self.kvStores = {}
 		self.readonly = readonly
 		self.channels = {}
 		if classes:
@@ -385,6 +386,22 @@ class StorageServer(Service):
 			self.storableClasses.append(s)
 		self._handlers = None
 		return self
+
+	def kv(self, name, store, readonly=None, export=None):
+		"""Registers a named KV store for HTTP exposure."""
+		assert name, "KV store name is required"
+		self.kvStores[str(name).strip("/")] = dict(
+			name=str(name).strip("/"),
+			store=store,
+			readonly=self.readonly if readonly is None else bool(readonly),
+			export=export or {},
+		)
+		self._handlers = None
+		return self
+
+	def useKV(self, name, store, readonly=None, export=None):
+		"""Alias for `kv`."""
+		return self.kv(name, store, readonly=readonly, export=export)
 
 	def iterHandlers(self) -> Iterable[Handler]:
 		async def handler_commands(request: HTTPRequest) -> HTTPResponse:
@@ -411,8 +428,235 @@ class StorageServer(Service):
 		yield self._handler(handler_channel_commands, ("POST", "channel/{cid:segment}/commands"))
 		yield self._handler(handler_channel_heartbeat, ("POST", "channel/{cid:segment}/heartbeat"))
 		yield self._handler(handler_channel_close, ("POST", "channel/{cid:segment}/close"))
+		for name in self.kvStores:
+			yield from self._iterKVHandlers(name)
 		for storableClass in self.storableClasses:
 			yield from self._iterHandlers(storableClass)
+
+	def resolveKV(self, name):
+		if name is None:
+			return None
+		return self.kvStores.get(str(name).strip("/"))
+
+	def kvKey(self, key):
+		return unquote(str(key))
+
+	def kvPage(self, values, request):
+		start = self.intParam(request, "start", 0)
+		count = self.intParam(request, "count", self.LIST_COUNT)
+		end = self.intParam(request, "end", start + count)
+		items = list(values)
+		page = items[start:end]
+		return dict(start=start, end=end, count=len(page), total=len(items), values=page)
+
+	def kvPageData(self, values, start=0, end=None, count=None):
+		count = self.LIST_COUNT if count is None else count
+		end = start + count if end is None else end
+		items = list(values)
+		page = items[start:end]
+		return dict(start=start, end=end, count=len(page), total=len(items), values=page)
+
+	def onKVDescribe(self, request, name):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		return request.returns(
+			dict(
+				name=info["name"],
+				readonly=info["readonly"],
+				capabilities=(
+					"get",
+					"set",
+					"delete",
+					"has",
+					"list",
+					"items",
+					"size",
+					"clear",
+					"commands",
+				),
+			)
+		)
+
+	def onKVSize(self, request, name):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		return request.returns(dict(name=info["name"], size=info["store"].size()))
+
+	def onKVHas(self, request, name, key):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		key = self.kvKey(key)
+		return request.returns(dict(name=info["name"], key=key, value=info["store"].has(key)))
+
+	def onKVGet(self, request, name, key):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		key = self.kvKey(key)
+		return request.returns(dict(name=info["name"], key=key, value=info["store"].get(key)))
+
+	async def onKVSet(self, request, name, key):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		if info["readonly"]:
+			return request.notAuthorized()
+		key = self.kvKey(key)
+		try:
+			data = await request.loadData()
+		except ValueError as error:
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADPAYLOAD",
+					"Invalid KV payload.",
+					str(error),
+					received=self.describeRequest(request),
+					expected='A JSON object such as {"value":...}.',
+				),
+				dict(operation="kv.set", store=info["name"], key=key),
+			)
+		if not isinstance(data, dict) or "value" not in data:
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADPAYLOAD",
+					"Invalid KV payload.",
+					"The KV set payload must be an object containing a value field.",
+					received=self.describeValue(data),
+					expected='A JSON object such as {"value":...}.',
+				),
+				dict(operation="kv.set", store=info["name"], key=key),
+			)
+		value = info["store"].set(key, restore(data.get("value")))
+		return request.returns(dict(name=info["name"], key=key, value=value))
+
+	def onKVDelete(self, request, name, key):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		if info["readonly"]:
+			return request.notAuthorized()
+		key = self.kvKey(key)
+		info["store"].delete(key)
+		return request.returns(dict(name=info["name"], key=key, value=True))
+
+	def onKVClear(self, request, name):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		if info["readonly"]:
+			return request.notAuthorized()
+		info["store"].clear()
+		return request.returns(dict(name=info["name"], value=True))
+
+	def onKVList(self, request, name):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		prefix = request.param("prefix")
+		return request.returns(self.kvPage(info["store"].ilist(prefix), request))
+
+	def onKVItems(self, request, name):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		prefix = request.param("prefix")
+		values = [dict(key=key, value=value) for key, value in info["store"].iitems(prefix)]
+		return request.returns(self.kvPage(values, request))
+
+	async def onKVCommands(self, request, name):
+		info = self.resolveKV(name)
+		if not info:
+			return request.notFound()
+		if info["readonly"]:
+			return request.notAuthorized()
+		try:
+			data = await request.loadData()
+		except ValueError as error:
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADPAYLOAD",
+					"Invalid KV commands payload.",
+					str(error),
+					received=self.describeRequest(request),
+					expected='A JSON object with a "commands" list.',
+				),
+				dict(operation="kv.commands", store=info["name"]),
+			)
+		commands = data.get("commands") if isinstance(data, dict) else None
+		if not isinstance(commands, list):
+			return self.storageError(
+				request,
+				StorageWebError(
+					"BADLIST",
+					"Invalid KV commands list.",
+					'The KV commands payload must contain a "commands" list.',
+					received=self.describeValue(data),
+					expected='A JSON object such as {"commands":[{"op":"set",...}]}.',
+				),
+				dict(operation="kv.commands", store=info["name"]),
+			)
+		results = [self.onKVCommand(info, _, index=i) for i, _ in enumerate(commands)]
+		return request.returns(dict(results=results))
+
+	def onKVCommand(self, info, command, index=None):
+		if not isinstance(command, dict):
+			return StorageWebError(
+				"BADITEM",
+				"Invalid KV command.",
+				"Each KV command must be an object.",
+				received=self.describeValue(command),
+				expected='A command object such as {"op":"set","key":"...","value":...}.',
+			).payload(dict(operation="kv.commands", index=index, store=info["name"]))
+		op = command.get("op")
+		key = command.get("key")
+		store = info["store"]
+		try:
+			if op == "set":
+				if key is None:
+					raise StorageWebError("NOKEY", "KV key is required.", "The KV set command requires a key.", received=dict(key=key), expected='A "key" string.')
+				value = restore(command.get("value"))
+				return dict(ok=True, op=op, key=str(key), value=store.set(str(key), value))
+			elif op == "get":
+				if key is None:
+					raise StorageWebError("NOKEY", "KV key is required.", "The KV get command requires a key.", received=dict(key=key), expected='A "key" string.')
+				return dict(ok=True, op=op, key=str(key), value=store.get(str(key)))
+			elif op == "has":
+				if key is None:
+					raise StorageWebError("NOKEY", "KV key is required.", "The KV has command requires a key.", received=dict(key=key), expected='A "key" string.')
+				return dict(ok=True, op=op, key=str(key), value=store.has(str(key)))
+			elif op == "delete":
+				if key is None:
+					raise StorageWebError("NOKEY", "KV key is required.", "The KV delete command requires a key.", received=dict(key=key), expected='A "key" string.')
+				store.delete(str(key))
+				return dict(ok=True, op=op, key=str(key), value=True)
+			elif op == "list":
+				prefix = command.get("prefix")
+				return dict(ok=True, op=op, **self.kvPageData(store.ilist(prefix), start=self.intValue(command.get("start"), 0), end=self.intValue(command.get("end"), None), count=self.intValue(command.get("count"), self.LIST_COUNT)))
+			elif op == "items":
+				prefix = command.get("prefix")
+				values = [dict(key=k, value=v) for k, v in store.iitems(prefix)]
+				return dict(ok=True, op=op, **self.kvPageData(values, start=self.intValue(command.get("start"), 0), end=self.intValue(command.get("end"), None), count=self.intValue(command.get("count"), self.LIST_COUNT)))
+			elif op == "size":
+				return dict(ok=True, op=op, value=store.size())
+			elif op == "clear":
+				store.clear()
+				return dict(ok=True, op=op, value=True)
+			else:
+				return StorageWebError(
+					"BADOP",
+					"Unsupported KV command.",
+					"The KV command operation is not supported: %s." % op,
+					received=dict(op=op),
+					expected='Supported KV operations: "set", "get", "has", "delete", "list", "items", "size", "clear".',
+				).payload(dict(operation="kv.commands", index=index, store=info["name"]))
+		except StorageWebError as error:
+			return error.payload(dict(operation="kv.commands", index=index, store=info["name"], op=op))
 
 	async def create(self, request, storableClass):
 		if self.readonly:
@@ -1512,6 +1756,50 @@ class StorageServer(Service):
 
 	def _handler(self, functor, *methods):
 		return Handler(functor=functor, methods=list(methods))
+
+	def _iterKVHandlers(self, name):
+		base = "kv/%s" % name
+
+		def handler_describe(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVDescribe(request, _name)
+
+		def handler_size(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVSize(request, _name)
+
+		def handler_has(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return self.onKVHas(request, _name, key)
+
+		def handler_get(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return self.onKVGet(request, _name, key)
+
+		async def handler_set(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return await self.onKVSet(request, _name, key)
+
+		def handler_delete(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return self.onKVDelete(request, _name, key)
+
+		def handler_list(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVList(request, _name)
+
+		def handler_items(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVItems(request, _name)
+
+		def handler_clear(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVClear(request, _name)
+
+		async def handler_commands(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return await self.onKVCommands(request, _name)
+
+		yield self._handler(handler_describe, ("GET", base))
+		yield self._handler(handler_size, ("GET", base + "/size"))
+		yield self._handler(handler_has, ("GET", base + "/has/{key:segment}"))
+		yield self._handler(handler_get, ("GET", base + "/get/{key:segment}"))
+		yield self._handler(handler_set, ("POST", base + "/set/{key:segment}"))
+		yield self._handler(handler_delete, ("POST", base + "/delete/{key:segment}"))
+		yield self._handler(handler_list, ("GET", base + "/list"))
+		yield self._handler(handler_items, ("GET", base + "/items"))
+		yield self._handler(handler_clear, ("POST", base + "/clear"))
+		yield self._handler(handler_commands, ("POST", base + "/commands"))
 
 	def _iterHandlers(self, storableClass):
 		info = StorageDecoration.Get(storableClass)

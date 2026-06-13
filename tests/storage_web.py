@@ -5,7 +5,16 @@ import tempfile
 import unittest
 from uuid import uuid4
 
-from storage import DirectoryBackend, JournalBackend, MemoryBackend, Types
+from storage import (
+	DirectoryBackend,
+	JournalBackend,
+	MemoryBackend,
+	Types,
+	KVStorage,
+	KVMemoryBackend,
+	StringKVKeyNormalizer,
+)
+from storage.formats import JSONCodec
 from storage.objects import ObjectStorage, StoredObject
 from storage.raw import RawStorage, StoredRaw
 from storage.web import StorageServer, http
@@ -47,6 +56,12 @@ class StorageWebTest(unittest.TestCase):
 		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(WebItem, WebTag)
 		self.raw = RawStorage(DirectoryBackend(self.path)).use(WebBlob)
 		self.server = StorageServer(prefix="/api", classes=(WebItem, WebTag, WebBlob))
+		self.kv = KVStorage(
+			KVMemoryBackend(),
+			normalizer=StringKVKeyNormalizer(),
+			codec=JSONCodec(),
+		)
+		self.server.kv("cache", self.kv)
 		self.app = Application()
 		self.app.mount(self.server)
 		asyncio.run(self.app.start())
@@ -165,6 +180,87 @@ class StorageWebTest(unittest.TestCase):
 		self.assertEqual(response.status, 200)
 		self.assertEqual(payload, b"payload")
 		self.assertEqual(response.headers.headers.get("Content-Type"), "text/plain")
+
+	def testKVCRUDAndListing(self):
+		response, described = self.requestJSON("GET", "/api/kv/cache")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(described["name"], "cache")
+
+		response, created = self.requestJSON(
+			"POST",
+			"/api/kv/cache/set/user%3A1",
+			body=json.dumps({"value": {"name": "Alice"}}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual(created["key"], "user:1")
+		self.assertEqual(created["value"]["name"], "Alice")
+
+		response, fetched = self.requestJSON("GET", "/api/kv/cache/get/user%3A1")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(fetched["value"]["name"], "Alice")
+
+		response, present = self.requestJSON("GET", "/api/kv/cache/has/user%3A1")
+		self.assertEqual(response.status, 200)
+		self.assertTrue(present["value"])
+
+		self.requestJSON(
+			"POST",
+			"/api/kv/cache/set/user%3A2",
+			body=json.dumps({"value": {"name": "Bob"}}),
+			headers={"Content-Type": "application/json"},
+		)
+
+		response, listed = self.requestJSON("GET", "/api/kv/cache/list?prefix=user%3A")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(sorted(listed["values"]), ["user:1", "user:2"])
+
+		response, items = self.requestJSON("GET", "/api/kv/cache/items?prefix=user%3A")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(2, items["count"])
+		self.assertEqual(sorted(_["key"] for _ in items["values"]), ["user:1", "user:2"])
+
+		response, sized = self.requestJSON("GET", "/api/kv/cache/size")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(2, sized["size"])
+
+		response, removed = self.requestJSON("POST", "/api/kv/cache/delete/user%3A1")
+		self.assertEqual(response.status, 200)
+		self.assertTrue(removed["value"])
+
+		response, sized = self.requestJSON("GET", "/api/kv/cache/size")
+		self.assertEqual(1, sized["size"])
+
+		response, cleared = self.requestJSON("POST", "/api/kv/cache/clear")
+		self.assertEqual(response.status, 200)
+		self.assertTrue(cleared["value"])
+		self.assertEqual(0, self.kv.size())
+
+	def testKVCommands(self):
+		response, payload = self.requestJSON(
+			"POST",
+			"/api/kv/cache/commands",
+			body=json.dumps(
+				{
+					"commands": [
+						{"op": "set", "key": "a", "value": 1},
+						{"op": "set", "key": "b", "value": 2},
+						{"op": "get", "key": "a"},
+						{"op": "has", "key": "b"},
+						{"op": "list", "prefix": ""},
+						{"op": "items", "prefix": ""},
+						{"op": "size"},
+					]
+				}
+			),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual(7, len(payload["results"]))
+		self.assertEqual(1, payload["results"][2]["value"])
+		self.assertTrue(payload["results"][3]["value"])
+		self.assertEqual(sorted(payload["results"][4]["values"]), ["a", "b"])
+		self.assertEqual(2, payload["results"][6]["value"])
 
 	def testRelationReadAndMutations(self):
 		tags = [WebTag(label=_).save() for _ in ("a", "b", "c", "d")]

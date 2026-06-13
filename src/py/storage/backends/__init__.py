@@ -58,7 +58,11 @@ class StorageBackend:
 
 	The `sync` method allows to request an explicit (blocking) synchronization
 	of the data. This should be used if you really want to make sure that
-	the data is commited to the underlying storage."""
+	the data is commited to the underlying storage.
+
+	This low-level backend API is shared by `ObjectStorage`, `RawStorage`,
+	and `KVStorage`. The latter uses the small compatibility aliases `delete`
+	and `size`, which default to `remove` and `count`."""
 
 	ORDER_NONE = 0
 	ORDER_ASCENDING = 1
@@ -149,6 +153,10 @@ class StorageBackend:
 		metric won't be actually removed, but just invalidated."""
 		raise NotImplementedError
 
+	def delete(self, key):
+		"""Alias for `remove`, used by `KVStorage`."""
+		return self.remove(key)
+
 	def clear(self):
 		"""Removes all the data from this backend."""
 		raise NotImplementedError
@@ -170,6 +178,10 @@ class StorageBackend:
 
 	def count(self, key=None):
 		raise Exception("Backend.count not implemented")
+
+	def size(self):
+		"""Alias for `count`, used by `KVStorage`."""
+		return self.count()
 
 	def keys(self, collection=None, order=ORDER_NONE):
 		raise Exception("Backend.keys not implemented")

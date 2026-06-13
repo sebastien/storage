@@ -1297,5 +1297,18 @@ function bridge(...args) {
 
 bridge.Singleton = undefined
 
+const StorageBridge = StoredObjectBridge
+const ObjectStorageBridge = StoredObjectBridge
+
 export default bridge
-export { StoredAttributes, StoredObjectBridge, StorageBridgeError, StoredObject, StoredRelation, StoredType, bridge }
+export {
+	StoredAttributes,
+	StoredObjectBridge,
+	ObjectStorageBridge,
+	StorageBridge,
+	StorageBridgeError,
+	StoredObject,
+	StoredRelation,
+	StoredType,
+	bridge,
+}

@@ -221,4 +221,124 @@ class SQLiteBackend(StorageBackend):
 		self.close()
 
 
+class KVSqliteBackend(StorageBackend):
+	"""Byte-oriented SQLite backend used by `KVStorage`."""
+
+	DEFAULT_TABLE = "kv"
+
+	def __init__(self, path: str, *, table: str = DEFAULT_TABLE, wal: bool = True):
+		super().__init__()
+		self.path = path if path.endswith(".sqlite3") else f"{path}.sqlite3"
+		self.table = table
+		self.wal = wal
+		self._connection: sqlite3.Connection | None = None
+		self._lock = threading.RLock()
+		self._open()
+
+	def _open(self):
+		with self._lock:
+			if self._connection is not None:
+				return
+			parent = os.path.dirname(os.path.abspath(self.path))
+			if parent and not os.path.isdir(parent):
+				raise RuntimeError("SQLite parent directory does not exist: %s" % parent)
+			self._connection = sqlite3.connect(self.path)
+			if self.wal:
+				self._connection.execute("PRAGMA journal_mode=WAL")
+				self._connection.execute("PRAGMA synchronous=NORMAL")
+			self._connection.execute(
+				"CREATE TABLE IF NOT EXISTS %s (key TEXT PRIMARY KEY, value BLOB)"
+				% self.table
+			)
+			self._connection.commit()
+
+	def _conn(self) -> sqlite3.Connection:
+		if self._connection is None:
+			self._open()
+		assert self._connection is not None
+		return self._connection
+
+	def set(self, key, data):
+		with self._lock:
+			self._conn().execute(
+				"INSERT INTO %s(key, value) VALUES (?, ?) "
+				"ON CONFLICT(key) DO UPDATE SET value=excluded.value" % self.table,
+				(key, data),
+			)
+			self._conn().commit()
+
+	def add(self, key, data):
+		return self.set(key, data)
+
+	def update(self, key, data):
+		return self.set(key, data)
+
+	def remove(self, key):
+		with self._lock:
+			self._conn().execute("DELETE FROM %s WHERE key = ?" % self.table, (key,))
+			self._conn().commit()
+
+	def delete(self, key):
+		return self.remove(key)
+
+	def has(self, key):
+		with self._lock:
+			cur = self._conn().execute(
+				"SELECT 1 FROM %s WHERE key = ?" % self.table,
+				(key,),
+			)
+			return cur.fetchone() is not None
+
+	def get(self, key):
+		with self._lock:
+			cur = self._conn().execute(
+				"SELECT value FROM %s WHERE key = ?" % self.table,
+				(key,),
+			)
+			row = cur.fetchone()
+			return row[0] if row else None
+
+	def keys(self, collection=None, order=StorageBackend.ORDER_NONE):
+		query = "SELECT key FROM %s" % self.table
+		if order == StorageBackend.ORDER_ASCENDING:
+			query += " ORDER BY key ASC"
+		elif order == StorageBackend.ORDER_DESCENDING:
+			query += " ORDER BY key DESC"
+		with self._lock:
+			rows = list(self._conn().execute(query))
+		prefix = collection[0] if isinstance(collection, (tuple, list)) and collection else collection
+		for row in rows:
+			key = row[0]
+			if prefix is None or key.startswith(prefix):
+				yield key
+
+	def count(self, key=None) -> int:
+		if key is None:
+			with self._lock:
+				cur = self._conn().execute("SELECT count(*) FROM %s" % self.table)
+				return cur.fetchone()[0]
+		return len(tuple(self.keys(key)))
+
+	def size(self) -> int:
+		return self.count()
+
+	def clear(self):
+		with self._lock:
+			self._conn().execute("DELETE FROM %s" % self.table)
+			self._conn().commit()
+
+	def close(self):
+		with self._lock:
+			if self._connection is not None:
+				self._connection.commit()
+				self._connection.close()
+				self._connection = None
+
+
+__all__ = [
+	"SQLiteBackend",
+	"KVSqliteBackend",
+]
+
+
 # EOF

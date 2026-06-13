@@ -4,6 +4,7 @@ from io import IOBase
 from typing import Iterator
 import os
 import shutil
+import base64
 
 # -----------------------------------------------------------------------------
 #
@@ -283,6 +284,93 @@ class DirectoryBackend(StorageBackend):
 
 	def _closeFileHandle(self, handle):
 		handle.close()
+
+
+class KVFileBackend(StorageBackend):
+	"""Byte-oriented filesystem backend used by `KVStorage`."""
+
+	def __init__(self, root: str, *, ext: str = ".kv"):
+		super().__init__()
+		self.root = root.rstrip("/") + "/"
+		self.ext = ext
+		if not os.path.isdir(self.root):
+			os.makedirs(self.root, exist_ok=True)
+
+	def _filename(self, key: str) -> str:
+		return base64.urlsafe_b64encode(key.encode("utf-8")).decode("ascii") + self.ext
+
+	def _keyname(self, name: str) -> str:
+		raw = name[: -len(self.ext)] if self.ext else name
+		return base64.urlsafe_b64decode(raw).decode("utf-8")
+
+	def _path(self, key: str) -> str:
+		return os.path.join(self.root, self._filename(key))
+
+	def set(self, key, data):
+		with open(self._path(key), "wb") as f:
+			f.write(data)
+
+	def add(self, key, data):
+		return self.set(key, data)
+
+	def update(self, key, data):
+		return self.set(key, data)
+
+	def remove(self, key):
+		path = self._path(key)
+		if os.path.isfile(path):
+			os.remove(path)
+
+	def delete(self, key):
+		return self.remove(key)
+
+	def has(self, key):
+		return os.path.isfile(self._path(key))
+
+	def get(self, key):
+		path = self._path(key)
+		if not os.path.isfile(path):
+			return None
+		with open(path, "rb") as f:
+			return f.read()
+
+	def keys(self, collection=None, order=StorageBackend.ORDER_NONE):
+		prefix = collection[0] if isinstance(collection, (tuple, list)) and collection else collection
+		keys = []
+		for name in os.listdir(self.root):
+			if not name.endswith(self.ext):
+				continue
+			try:
+				key = self._keyname(name)
+			except Exception:
+				continue
+			if prefix is None or key.startswith(prefix):
+				keys.append(key)
+		if order == StorageBackend.ORDER_ASCENDING:
+			keys = sorted(keys)
+		elif order == StorageBackend.ORDER_DESCENDING:
+			keys = sorted(keys, reverse=True)
+		for key in keys:
+			yield key
+
+	def count(self, key=None):
+		if key is None:
+			return sum(1 for _ in self.keys())
+		return len(tuple(self.keys(key)))
+
+	def size(self) -> int:
+		return self.count()
+
+	def clear(self):
+		for name in os.listdir(self.root):
+			if name.endswith(self.ext):
+				os.remove(os.path.join(self.root, name))
+
+
+__all__ = [
+	"DirectoryBackend",
+	"KVFileBackend",
+]
 
 
 # EOF
