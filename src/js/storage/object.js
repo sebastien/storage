@@ -23,7 +23,7 @@ class StoredAttributes {
 	}
 
 	has(name) {
-		return Object.prototype.hasOwnProperty.call(this.values, name)
+		return  Object.hasOwn(this.values, name)
 	}
 
 	set(name, value) {
@@ -176,7 +176,7 @@ class StoredObject {
 	}
 
 	routePath() {
-		return `${this.bridge.typePath(this.routeType)}/${encodeURIComponent(this.id)}`
+		return `${this.bridge.typePath(this.routeType)}/${this.bridge.idPath(this.id)}`
 	}
 
 	toJSON() {
@@ -231,8 +231,8 @@ class StoredObject {
 		const delta = {}
 		const names = new Set([...Object.keys(before), ...Object.keys(after)])
 		for (const name of names) {
-			const hasBefore = Object.prototype.hasOwnProperty.call(before, name)
-			const hasAfter = Object.prototype.hasOwnProperty.call(after, name)
+			const hasBefore = Object.hasOwn(before, name)
+			const hasAfter = Object.hasOwn(after, name)
 			if (!hasBefore && hasAfter) {
 				delta[name] = { before: undefined, after: after[name] }
 				continue
@@ -360,7 +360,7 @@ class StoredObjectBridge {
 			throw new Error("Storage method name is required")
 		}
 		const method = options.method || (data === undefined ? "GET" : "POST")
-		let path = `${this.typePath(type)}/${encodeURIComponent(String(id))}/${encodeURIComponent(String(name))}`
+		let path = `${this.typePath(type)}/${this.idPath(id)}/${encodeURIComponent(String(name))}`
 		if (method === "GET" && data && typeof data === "object" && !Array.isArray(data)) {
 			const query = this.queryString(data)
 			if (query) {
@@ -472,7 +472,7 @@ class StoredObjectBridge {
 		}
 		const response = await this.fetch.call(globalThis, this.url(path), init)
 		const text = await response.text()
-		let data = undefined
+		let data 
 		try {
 			data = text ? JSON.parse(text) : undefined
 		} catch (_) {
@@ -486,6 +486,10 @@ class StoredObjectBridge {
 
 	typePath(type) {
 		return encodeURIComponent(this.routeType(type))
+	}
+
+	idPath(id) {
+		return encodeURIComponent(String(id)).replace(/%3A/gi, ":")
 	}
 
 	url(path) {
@@ -584,10 +588,11 @@ class StoredObjectBridge {
 	}
 }
 
-function bridge(options) {
+function bridge(...args) {
+	const [options] = args
 	if (!bridge.Singleton) {
 		bridge.Singleton = new StoredObjectBridge(options || {})
-	} else if (arguments.length > 0) {
+	} else if (args.length > 0) {
 		if (!bridge.Singleton.hasSameOptions(options) && globalThis.console && globalThis.console.warn) {
 			globalThis.console.warn("Storage bridge options changed; reconfiguring singleton bridge")
 		}

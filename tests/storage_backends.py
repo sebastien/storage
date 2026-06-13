@@ -12,6 +12,7 @@
 import unittest
 import storage
 import datetime
+import io
 import time
 import os
 import shutil
@@ -395,6 +396,51 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 		for i in range(len(self.VALUES_VALID)):
 			self.assertIn("key_" + str(i), keys)
 		self.assertEqual(len(keys), len(self.KEYS_VALID) + len(self.VALUES_VALID))
+
+
+# -----------------------------------------------------------------------------
+#
+# SQLITE BACKEND TEST
+#
+# -----------------------------------------------------------------------------
+
+
+class SQLiteBackendTest(AbstractBackendTest, unittest.TestCase):
+	def _createBackend(self):
+		return storage.SQLiteBackend(self.path)
+
+	def tearDown(self):
+		self.backend.close()
+		for suffix in (".sqlite3", ".sqlite3-shm", ".sqlite3-wal"):
+			if os.path.exists(self.path + suffix):
+				os.remove(self.path + suffix)
+
+	def testClose(self):
+		self.assertEqual(0, self.backend.count())
+		for k in self.KEYS_VALID:
+			self.backend.add(k, "OK")
+		self.backend.close()
+		for k in self.KEYS_VALID:
+			self.backend.update(k, "new_value")
+			self.assertEqual(self.backend.get(k), "new_value")
+		self.assertTrue(self.backend.close())
+		self.backend._open()
+		self.assertEqual(len(self.KEYS_VALID), self.backend.count())
+
+	def testPrefixKeysAndCount(self):
+		self.backend.add("User.1", "A")
+		self.backend.add("User.2", "B")
+		self.backend.add("Message.1", "C")
+		self.assertEqual(2, self.backend.count("User"))
+		self.assertListEqual(["User.1", "User.2"], sorted(self.backend.keys("User")))
+
+	def testRawData(self):
+		self.assertFalse(self.backend.hasRawData("blob"))
+		self.assertListEqual([None], list(self.backend.streamRawData("blob")))
+		self.backend.saveRawData("blob", io.BytesIO(b"abcdef"))
+		self.assertTrue(self.backend.hasRawData("blob"))
+		self.assertListEqual([b"ab", b"cd", b"ef"], list(self.backend.streamRawData("blob", size=2)))
+		self.assertRaises(NotImplementedError, self.backend.getRawDataPath, "blob")
 
 
 # -----------------------------------------------------------------------------

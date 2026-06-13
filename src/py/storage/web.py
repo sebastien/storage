@@ -2,6 +2,7 @@ import types
 import sys
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import unquote
 
 try:
 	from extra import HTTPRequest, HTTPResponse, Service
@@ -173,6 +174,7 @@ class StorageServer(Service):
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	async def onStorableUpdate(self, storableClass, info, request, sid):
+		sid = unquote(sid)
 		if self.readonly:
 			return request.notAuthorized()
 		storable = storableClass.Get(sid)
@@ -187,6 +189,7 @@ class StorageServer(Service):
 		return request.returns(storable.export(**info.getExportOptions()))
 
 	def onStorableRemove(self, storableClass, info, request, sid):
+		sid = unquote(sid)
 		if self.readonly:
 			return request.notAuthorized()
 		storable = storableClass.Get(sid)
@@ -198,6 +201,7 @@ class StorageServer(Service):
 			return request.notFound()
 
 	def onStorableGet(self, storableClass, info, request, sid):
+		sid = unquote(sid)
 		storable = storableClass.Get(sid)
 		if not storable:
 			if request.query and "strict" in request.query:
@@ -209,6 +213,7 @@ class StorageServer(Service):
 	async def onStorableInvokeMethod(
 		self, storableClass, name, contentType, request, sid, *args, **kwargs
 	):
+		sid = unquote(sid)
 		storable = storableClass.Get(sid)
 		if not storable:
 			return request.notFound()
@@ -249,6 +254,7 @@ class StorageServer(Service):
 		return request.returns(dict(start=start, end=end, count=len(res), values=res))
 
 	def onRawGetData(self, storableClass, request, sid):
+		sid = unquote(sid)
 		storable = storableClass.Get(sid)
 		assert isinstance(storable, StoredRaw)
 		return request.respondFile(
