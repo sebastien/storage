@@ -13,10 +13,12 @@ import inspect
 import threading
 import traceback
 import weakref
+from dataclasses import dataclass
 from typing import Any, Callable, ClassVar, Iterator, List, Optional, Self, Type
 
 from .backends import StorageBackend
 from .core import (
+	NOTHING,
 	Storable,
 	Identifier,
 	asJSON,
@@ -72,6 +74,13 @@ def _resolveAccessor(storedObject, prefix: str, name: str):
 	return getattr(storedObject, accessor_name) if hasattr(storedObject, accessor_name) else None
 
 
+@dataclass(frozen=True)
+class Ownership:
+	ownerType: Type["StoredObject"]
+	required: bool = True
+	cascade: bool = False
+
+
 # -----------------------------------------------------------------------------
 #
 # STORED OBJECT MODEL
@@ -103,8 +112,36 @@ class StoredObject(Storable):
 	PROPERTIES: ClassVar[dict[str, Any]] = {}
 	COMPUTED_PROPERTIES: ClassVar[list[str]] = []
 	RELATIONS: ClassVar[dict[str, Type["StoredObject"]]] = {}
-	RESERVED: ClassVar[list[str]] = ["type", "id", "revision", "updates"]
+	OWNERSHIP: ClassVar[Optional[Ownership]] = None
+	RESERVED: ClassVar[list[str]] = ["type", "id", "owner", "revision", "updates"]
 	INDEXES: ClassVar[list[Index]] = []
+
+	@classmethod
+	def Owns(cls, *, required: bool = True, cascade: bool = False) -> Ownership:
+		return Ownership(ownerType=cls, required=required, cascade=cascade)
+
+	@classmethod
+	def GetOwnership(cls):
+		ownership_definition = cls.OWNERSHIP
+		if ownership_definition is None or isinstance(ownership_definition, Ownership):
+			return ownership_definition
+		if callable(ownership_definition):
+			parameters = inspect.signature(ownership_definition).parameters
+			ownership_definition = (
+				ownership_definition(None)
+				if len(parameters) == 1
+				else ownership_definition()
+			)
+		if inspect.isclass(ownership_definition) and issubclass(
+			ownership_definition, StoredObject
+		):
+			ownership_definition = Ownership(ownership_definition)
+		if not isinstance(ownership_definition, Ownership):
+			raise ValueError(
+				f"OWNERSHIP for {cls.__name__} must resolve to Ownership or StoredObject class"
+			)
+		cls.OWNERSHIP = ownership_definition
+		return ownership_definition
 
 	@classmethod
 	def _ensureStorage(cls) -> "ObjectStorage":
@@ -152,6 +189,50 @@ class StoredObject(Storable):
 		return f"{cls.ID_PREFIX}-{id}" if cls.ID_PREFIX else id
 
 	@classmethod
+	def OwnerBucket(cls, owner: Optional[Any] = None) -> str:
+		if owner is None:
+			return "0"
+		if isinstance(owner, StoredObject):
+			return str(owner.id)
+		if isinstance(owner, dict):
+			owner_id = owner.get("id")
+			if owner_id is not None:
+				return str(owner_id)
+		if isinstance(owner, (tuple, list)) and owner:
+			return str(owner[0])
+		return str(owner)
+
+	@classmethod
+	def NormalizeID(cls, id: Any = None, owner: Any = NOTHING) -> Any:
+		ownership = cls.GetOwnership()
+		if not ownership:
+			return tuple(id) if isinstance(id, list) else id
+		if isinstance(id, list):
+			id = tuple(id)
+		if owner is not NOTHING:
+			local_id = id[1] if isinstance(id, (tuple, list)) and len(id) == 2 else id
+			return (owner.id if isinstance(owner, StoredObject) else owner, local_id)
+		if isinstance(id, (tuple, list)) and len(id) == 2:
+			return (id[0], id[1])
+		return id
+
+	@classmethod
+	def SplitID(cls, id: Any, owner: Any = NOTHING) -> tuple[Any, Any]:
+		normalized = cls.NormalizeID(id, owner=owner)
+		if cls.GetOwnership():
+			if isinstance(normalized, (tuple, list)) and len(normalized) == 2:
+				return normalized[0], normalized[1]
+			raise ValueError(
+				f"Owned class {cls.__name__} requires an id of the form (ownerId, id)"
+			)
+		return None, normalized
+
+	@classmethod
+	def _SplitScopedID(cls, id, owner=NOTHING):
+		owner_id, local_id = cls.SplitID(id, owner=owner)
+		return cls.OwnerBucket(owner_id), local_id
+
+	@classmethod
 	def All(cls, since=None) -> Iterator["StoredObject"]:
 		"""Iterates on all the objects of this type in the storage."""
 		storage = cls._ensureStorage()
@@ -169,13 +250,16 @@ class StoredObject(Storable):
 	# an Ensure method that will create the object if necessary.
 	@classmethod
 	def Get(
-		cls, id: Optional[str] = None, key: Optional[str] = None
+		cls, id: Optional[Any] = None, owner: Optional[Any] = NOTHING, key: Optional[str] = None
 	) -> Optional["StoredObject"]:
 		"""Returns the instance associated with the given Object ID, if any"""
 		storage = cls._ensureStorage()
 		if id is None and key is None:
 			return None
-		return storage.get(cls.StorageKey(id) if key is None else key)
+		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
+			id = (id, owner)
+			owner = NOTHING
+		return storage.get(cls.StorageKey(id, owner=owner) if key is None else key)
 
 	@classmethod
 	def Count(cls) -> int:
@@ -188,30 +272,42 @@ class StoredObject(Storable):
 		return cls._ensureStorage().list(cls, count, start, end)
 
 	@classmethod
-	def Has(cls, id: str) -> bool:
-		"""Tells if there is an object stored with the given object id."""
-		return cls._ensureStorage().has(cls.StorageKey(id))
+	def OwnedBy(cls, owner: "StoredObject") -> Iterator["StoredObject"]:
+		"""Lists objects of this type owned by the given owner."""
+		return cls._ensureStorage().ownedBy(owner, cls)
 
 	@classmethod
-	def Ensure(cls, id):
+	def Has(cls, id: Any, owner: Optional[Any] = NOTHING) -> bool:
+		"""Tells if there is an object stored with the given object id."""
+		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
+			id = (id, owner)
+			owner = NOTHING
+		return cls._ensureStorage().has(cls.StorageKey(id, owner=owner))
+
+	@classmethod
+	def Ensure(cls, id, owner=NOTHING):
 		"""Ensures that there is an object with the given object id in the
 		storage. If not, it will create a new instance of this specific
 		stored object sub-class"""
-		res = cls.Get(id)
+		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
+			id = (id, owner)
+			owner = NOTHING
+		res = cls.Get(id, owner=owner)
 		if res is None:
-			res = cls(id)
+			res = cls(id, owner=owner)
 		return res
 
 	@classmethod
-	def StorageKey(cls, id):
+	def StorageKey(cls, id, owner=NOTHING):
 		"""Returns the storage key associated with the given id of this class."""
 		if isinstance(id, StoredObject):
 			id = id.id
+		owner_id, local_id = cls._SplitScopedID(id, owner=owner)
 		if cls.COLLECTION:
-			return str(cls.COLLECTION) + "." + str(id)
+			return str(cls.COLLECTION) + "." + str(owner_id) + "." + str(local_id)
 		else:
 			cls.COLLECTION = cls.__name__.split(".")[-1]
-			return cls.StorageKey(id)
+			return cls.StorageKey(local_id, owner=owner_id)
 
 	@classmethod
 	def StoragePrefix(cls):
@@ -266,16 +362,19 @@ class StoredObject(Storable):
 				)
 
 	@classmethod
-	def Export(cls, id, **options):
+	def Export(cls, id, owner=NOTHING, **options):
 		"""A convenient fonction that will return the full object corresponding
 		to the id if it is in base, or will return a stripped down version with
 		id and class."""
 		storage = cls._ensureStorage()
-		o = storage.get(cls.StorageKey(id))
+		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
+			id = (id, owner)
+			owner = NOTHING
+		o = storage.get(cls.StorageKey(id, owner=owner))
 		if o:
 			return o.export(**options)
 		else:
-			return {"id": id, "type": getCanonicalName(cls)}
+			return {"id": asPrimitive(cls.NormalizeID(id, owner=owner)), "type": getCanonicalName(cls)}
 
 	HAS_DESCRIPTORS = False
 
@@ -300,6 +399,7 @@ class StoredObject(Storable):
 			cls.PROPERTIES = cls.PROPERTIES(instance)
 		if not isinstance(cls.RELATIONS, dict):
 			cls.RELATIONS = cls.RELATIONS(instance)
+		cls.GetOwnership()
 		for _ in cls.PROPERTIES:
 			setattr(cls, _, PropertyDescriptor(_))
 		for _ in cls.RELATIONS:
@@ -320,16 +420,19 @@ class StoredObject(Storable):
 			skipExtraProperties = self.SKIP_EXTRA_PROPERTIES
 		if id is None and properties:
 			id = properties.get("id")
+		owner = kwargs.pop("owner", NOTHING)
+		if properties and "owner" in properties and owner is NOTHING:
+			owner = properties.get("owner")
 		# If we really can't find an id, we generate a new one
 		if id is None:
-			self.id = self.GenerateID()
-		else:
-			self.id = id
+			id = self.GenerateID()
+		self.id = self.__class__.NormalizeID(id, owner=owner)
 		self.storage = self.STORAGE
 		if not self.__class__.HAS_DESCRIPTORS:
 			self.__class__._GenerateDescriptors(self)
 		self._properties = {}
 		self._relations = {}
+		self._owner = None
 		self._revision = {}
 		self._isNew = restored
 		self.set(properties, skipExtraProperties=skipExtraProperties)
@@ -339,13 +442,13 @@ class StoredObject(Storable):
 			self._revision.update(properties.get("revision") or properties.get("updates") or {})
 		if kwargs:
 			self._revision.update(kwargs.get("revision") or kwargs.get("updates") or {})
-		if self.STORAGE:
+		if self.STORAGE and (not self.getOwnership() or self.hasOwner() or restored):
 			self.STORAGE.register(self, restored=restored)
 		# We make sure that there's a timestamp for the object, we default it to 0
 		if "id" not in self._revision:
 			self._revision["id"] = getTimestamp()
 		# FIXME: Should we make sure that the object had updates for everything?
-		assert self.getStorageKey(), "Object must have a key once created"
+		assert (not self.getOwnership() or self.id), "Owned object must have an id once created"
 		self.init()
 
 	@property
@@ -365,6 +468,8 @@ class StoredObject(Storable):
 					self.setProperty(name, value, timestamp)
 				elif name in self.RELATIONS:
 					self.setRelation(name, value, timestamp)
+				elif name == "owner":
+					self.setOwner(value, timestamp)
 				elif name in self.RESERVED:
 					if name in ("revision", "updates"):
 						for k in value:
@@ -462,6 +567,77 @@ class StoredObject(Storable):
 	def iterRelations(self) -> Iterator[tuple[str, "Relation"]]:
 		yield from ((_, self.getRelation(_)) for _ in self.__class__.RELATIONS)
 
+	def getOwnership(self) -> Optional[Ownership]:
+		return self.__class__.GetOwnership()
+
+	def getOwner(self) -> Optional["StoredObject"]:
+		ownership = self.getOwnership()
+		owner_id = self.getOwnerID()
+		if not ownership or owner_id is None:
+			return None
+		if self._owner and isSame(self._owner, {"type": getCanonicalName(ownership.ownerType), "id": owner_id}):
+			return self._owner
+		self._owner = ownership.ownerType.Get(owner_id)
+		return self._owner
+
+	def getOwnerID(self):
+		if self.getOwnership() and isinstance(self.id, (tuple, list)) and len(self.id) == 2:
+			return self.id[0]
+		return None
+
+	def getLocalID(self):
+		if self.getOwnership() and isinstance(self.id, (tuple, list)) and len(self.id) == 2:
+			return self.id[1]
+		return self.id
+
+	def ownerKey(self) -> Optional[str]:
+		owner = self.getOwner()
+		return owner.getStorageKey() if owner else None
+
+	def setOwner(self, owner: Optional["StoredObject"], timestamp=None) -> Self:
+		ownership = self.getOwnership()
+		if owner is None:
+			if ownership and ownership.required:
+				raise ValueError(
+					f"{self.__class__.__name__} requires an owner of type {ownership.ownerType.__name__}"
+				)
+			self._owner = None
+			return self
+		restored = restore(owner)
+		if not isinstance(restored, StoredObject):
+			raise ValueError(f"Owner must be a stored object, got {type(restored)}: {restored}")
+		if not ownership:
+			raise ValueError(f"{self.__class__.__name__} does not declare OWNERSHIP")
+		if not isinstance(restored, ownership.ownerType):
+			raise ValueError(
+				f"{self.__class__.__name__} expects owner of type {ownership.ownerType.__name__}, got {type(restored).__name__}"
+			)
+		current_owner_id = self.getOwnerID()
+		if current_owner_id is not None and str(current_owner_id) != str(restored.id):
+			raise ValueError(f"Owner is immutable for {self.__class__.__name__}:{self.id}")
+		local_id = self.getLocalID()
+		self.id = self.__class__.NormalizeID(local_id, owner=restored)
+		self._owner = restored
+		if not self._isNew:
+			self._revision["owner"] = self._revision["id"] = max(
+				getTimestamp() if timestamp is None else timestamp,
+				self._revision.get("owner", -1),
+			)
+		return self
+
+	def hasOwner(self) -> bool:
+		return self.getOwnerID() is not None
+
+	owner = property(getOwner, setOwner)
+
+	def validateOwnership(self) -> Self:
+		ownership = self.getOwnership()
+		if ownership and ownership.required and self.getOwnerID() is None:
+			raise ValueError(
+				f"{self.__class__.__name__} requires an owner of type {ownership.ownerType.__name__}"
+			)
+		return self
+
 	def iterReferences(self, limit: int = -1) -> Iterator["StoredObject"]:
 		if limit != 0:
 			for o in (
@@ -516,6 +692,7 @@ class StoredObject(Storable):
 		"""Saves this object to the storage."""
 		if not self.storage:
 			raise RuntimeError(f"StoredObject has no assigned storage: {self}")
+		self.validateOwnership()
 		key = self.getStorageKey()
 		if self.storage.has(key):
 			self.storage.update(self)
@@ -570,7 +747,7 @@ class StoredObject(Storable):
 		res: dict[str, TPrimitive] = {}
 		for key in keys:
 			if key == "id":
-				res[key] = str(self.id)
+				res[key] = asPrimitive(self.id)
 			elif key == "type":
 				res[key] = self.getTypeName()
 			elif key in self.PROPERTIES:
@@ -588,7 +765,7 @@ class StoredObject(Storable):
 		# SEE: http://stackoverflow.com/questions/1379934/large-numbers-erroneously-rounded-in-javascript
 		# We cannot allow IDs to be long numbers...
 		res = {
-			"id": str(self.id),
+			"id": asPrimitive(self.id),
 			"type": self.getTypeName(),
 			"revision": self._revision,
 		}
@@ -1005,6 +1182,7 @@ class ObjectStorage:
 		self.lock.acquire()
 		try:
 			# if True:
+			storedObject.validateOwnership()
 			key = storedObject.getStorageKey()
 			exported_object = self.serializeObjectExport(storedObject.export())
 			if creation:
@@ -1144,6 +1322,8 @@ class ObjectStorage:
 			key = old_value.getStorageKey()
 		else:
 			old_value = self.get(key)
+		if old_value and isinstance(old_value, StoredObject):
+			self._cascadeOwnedObjects(old_value)
 		if key in self._cache:
 			del self._cache[key]
 		# We update the indexes
@@ -1187,6 +1367,39 @@ class ObjectStorage:
 			prefix = [_.StoragePrefix() for _ in storedObjectClasses]
 		return prefix
 
+	def ownedBy(self, owner: StoredObject, storedObjectClasses=None):
+		classes = self._ownedClasses(storedObjectClasses)
+		for ownedClass in classes:
+			for item in ownedClass.All():
+				if item and item.getOwner() and isSame(item.getOwner(), owner):
+					yield item
+
+	def _ownedClasses(self, storedObjectClasses=None):
+		if storedObjectClasses:
+			if inspect.isclass(storedObjectClasses) and issubclass(
+				storedObjectClasses, StoredObject
+			):
+				classes = (storedObjectClasses,)
+			else:
+				classes = tuple(storedObjectClasses)
+		else:
+			classes = tuple(self._declaredClasses.values())
+		return [
+			c
+			for c in classes
+			if isinstance(c.GetOwnership(), Ownership)
+		]
+
+	def _cascadeOwnedObjects(self, owner: StoredObject):
+		for ownedClass in self._ownedClasses():
+			ownership = ownedClass.OWNERSHIP
+			if not ownership or not ownership.cascade:
+				continue
+			if not isinstance(owner, ownership.ownerType):
+				continue
+			for item in list(self.ownedBy(owner, ownedClass)):
+				self.remove(item)
+
 	def export(self):
 		"""Exports all the objects in this storage. You should only use that
 		in development mode as it could bring down your machine as it will
@@ -1227,6 +1440,7 @@ class ObjectStorage:
 
 __all__ = [
 	"ObjectStorage",
+	"Ownership",
 	"Property",
 	"Relation",
 	"StoredObject",

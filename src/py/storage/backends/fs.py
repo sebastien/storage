@@ -128,11 +128,7 @@ class DirectoryBackend(StorageBackend):
 		path = self.keyToPath(self, key)
 		if os.path.exists(path):
 			os.unlink(path)
-		parent = os.path.dirname(path)
-		if parent != self.root:
-			if os.path.exists(parent):
-				if not os.listdir(parent):
-					os.rmdir(parent)
+		self._cleanupEmptyParents(path)
 		return self
 
 	def sync(self):
@@ -284,6 +280,15 @@ class DirectoryBackend(StorageBackend):
 
 	def _closeFileHandle(self, handle):
 		handle.close()
+
+	def _cleanupEmptyParents(self, path):
+		root = self.root.rstrip(os.sep)
+		parent = os.path.dirname(path)
+		while parent and parent != root and os.path.exists(parent):
+			if os.listdir(parent):
+				break
+			os.rmdir(parent)
+			parent = os.path.dirname(parent)
 
 
 class KVFileBackend(StorageBackend):

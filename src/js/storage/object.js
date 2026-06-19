@@ -4,6 +4,8 @@ const DEFAULT_AUTO_PUSH_DELAY = 500
 const DEFAULT_LIVE_COMMAND_DELAY = 200
 const DEFAULT_LIVE_HEARTBEAT = 30000
 
+const isSameJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
 class StorageBridgeError extends Error {
 	constructor(message, response, body) {
 		super(message)
@@ -36,7 +38,7 @@ class StoredAttributes {
 		const before = this.owner.bridge.serialize(this.values[name])
 		const after = this.owner.bridge.serialize(value)
 		this.values[name] = value
-		if (JSON.stringify(before) !== JSON.stringify(after)) {
+		if (!isSameJSON(before, after)) {
 			this.dirty.add(name)
 		}
 		return this.owner
@@ -77,7 +79,7 @@ class StoredAttributes {
 		}
 		const current = this.owner.bridge.serialize(this.values[name])
 		const sent = acknowledged[name]
-		return JSON.stringify(current) === JSON.stringify(sent)
+		return isSameJSON(current, sent)
 	}
 
 	changes() {
@@ -112,6 +114,7 @@ class StoredObject {
 		this.type = type
 		this.revision = {}
 		this.fields = new StoredAttributes(this)
+		this.relationStates = new Map()
 		this.subscribers = new Set()
 	}
 
@@ -214,6 +217,25 @@ class StoredObject {
 		return new StoredRelation(this, name)
 	}
 
+	relationState(name) {
+		const key = String(name)
+		let state = this.relationStates.get(key)
+		if (!state) {
+			state = {
+				name: key,
+				values: [],
+				revision: undefined,
+				loaded: false,
+				version: 0,
+				pending: 0,
+				refreshQueued: false,
+				subscribers: new Set(),
+			}
+			this.relationStates.set(key, state)
+		}
+		return state
+	}
+
 	async relations() {
 		return await this.bridge.relations(this.routeType, this.id)
 	}
@@ -302,6 +324,24 @@ class StoredRelation {
 		this.owner = owner
 		this.bridge = owner.bridge
 		this.name = String(name)
+		this.state = owner.relationState(this.name)
+	}
+
+	sub(callback) {
+		if (typeof callback !== "function") {
+			throw new Error("StoredRelation.sub expects a callback")
+		}
+		this.state.subscribers.add(callback)
+		return () => this.unsub(callback)
+	}
+
+	unsub(callback) {
+		this.state.subscribers.delete(callback)
+		return this
+	}
+
+	values() {
+		return [...this.state.values]
 	}
 
 	async count() {
@@ -309,11 +349,23 @@ class StoredRelation {
 	}
 
 	async page(options = {}) {
-		return await this.bridge.relationPage(this.owner.routeType, this.owner.id, this.name, options)
+		const page = await this.bridge.relationPage(this.owner.routeType, this.owner.id, this.name, options)
+		if (this.isCachedQuery(options)) {
+			this.applyPage(page, "remote")
+		}
+		return page
 	}
 
 	async list(options = {}) {
-		return await this.bridge.relationList(this.owner.routeType, this.owner.id, this.name, options)
+		if (this.isCachedQuery(options) && this.state.loaded && !options.refresh) {
+			return this.values()
+		}
+		const values = await this.bridge.relationList(this.owner.routeType, this.owner.id, this.name, options)
+		if (this.isCachedQuery(options)) {
+			this.applyValues(values, this.state.revision, "remote")
+			return this.values()
+		}
+		return values
 	}
 
 	async *ilist(options = {}) {
@@ -322,6 +374,10 @@ class StoredRelation {
 
 	async all(options = {}) {
 		return await this.list(options)
+	}
+
+	async refresh(options = {}) {
+		return await this.list({ ...options, refresh: true, local: false })
 	}
 
 	async set(values, options = {}) {
@@ -366,11 +422,208 @@ class StoredRelation {
 	}
 
 	async operation(name, body = {}, options = {}) {
-		return await this.bridge.relationOperation(this.owner.routeType, this.owner.id, this.name, name, body, options)
+		const before = this.snapshot()
+		const acknowledged = this.optimistic(name, body, options)
+		const tracked = this.isCachedQuery(options) && this.state.loaded
+		if (tracked) {
+			this.state.pending += 1
+		}
+		const requestOptions =
+			options.revision === undefined && this.state.revision !== undefined
+				? { ...options, revision: this.state.revision }
+				: options
+		try {
+			const result = await this.bridge.relationOperation(
+				this.owner.routeType,
+				this.owner.id,
+				this.name,
+				name,
+				body,
+				requestOptions,
+			)
+			if (acknowledged === this.state.version && this.isRelationPage(result)) {
+				this.applyPage(result, "remote")
+			}
+			return result
+		} catch (error) {
+			if (acknowledged === this.state.version) {
+				this.restore(before, "remote")
+			}
+			throw error
+		} finally {
+			if (tracked) {
+				this.state.pending = Math.max(0, this.state.pending - 1)
+				if (!this.state.pending && this.state.refreshQueued) {
+					this.state.refreshQueued = false
+					void this.refresh().catch((error) => this.bridge.reportLiveError(error))
+				}
+			}
+		}
 	}
 
 	asValues(values) {
 		return Array.isArray(values) ? values : [values]
+	}
+
+	isCachedQuery(options = {}) {
+		return !(
+			options.refresh ||
+			options.start !== undefined ||
+			options.end !== undefined ||
+			options.count !== undefined ||
+			options.limit !== undefined
+		)
+	}
+
+	isRelationPage(value) {
+		return !!(value && typeof value === "object" && Array.isArray(value.values))
+	}
+
+	snapshot() {
+		return {
+			values: [...this.state.values],
+			revision: this.state.revision,
+			loaded: this.state.loaded,
+			version: this.state.version,
+			pending: this.state.pending,
+			refreshQueued: this.state.refreshQueued,
+		}
+	}
+
+	restore(snapshot, direction = "remote") {
+		const before = this.snapshot()
+		this.state.values = [...(snapshot.values || [])]
+		this.state.revision = snapshot.revision
+		this.state.loaded = !!snapshot.loaded
+		this.state.version = snapshot.version
+		this.state.pending = snapshot.pending ?? this.state.pending
+		this.state.refreshQueued = !!snapshot.refreshQueued
+		this.emitChange(before, direction)
+		return this
+	}
+
+	applyPage(page, direction = "remote") {
+		return this.applyValues(page.values || [], page.revision, direction)
+	}
+
+	applyValues(values, revision, direction = "remote") {
+		const before = this.snapshot()
+		const next = Array.isArray(values) ? [...values] : []
+		this.state.values = next
+		this.state.revision = revision
+		this.state.loaded = true
+		this.emitChange(before, direction)
+		return this
+	}
+
+	optimistic(name, body, options = {}) {
+		if (options.local === false || !this.isCachedQuery(options)) {
+			return this.state.version
+		}
+		if (!this.state.loaded && name !== "set" && name !== "append" && name !== "prepend" && name !== "clear") {
+			return this.state.version
+		}
+		const before = this.snapshot()
+		const values = this.applyOperationValues(this.state.values, name, body)
+		if (values === this.state.values) {
+			return this.state.version
+		}
+		this.state.values = values
+		this.state.loaded = true
+		this.state.version += 1
+		this.emitChange(before, "local")
+		return this.state.version
+	}
+
+	applyOperationValues(values, name, body = {}) {
+		const next = [...values]
+		const list = body.values ? this.bridge.deserialize(body.values) : undefined
+		switch (name) {
+			case "set":
+				return Array.isArray(list) ? [...list] : []
+			case "append":
+				return list ? next.concat(list) : next
+			case "prepend":
+				return list ? list.concat(next) : next
+			case "insert": {
+				const index = this.normalizeIndex(body.index, next.length, true)
+				if (!list) return next
+				next.splice(index, 0, ...list)
+				return next
+			}
+			case "delete":
+				return this.deleteRange(next, body)
+			case "remove":
+				return list ? next.filter((_) => !list.some((item) => this.sameValue(_, item))) : next
+			case "swap": {
+				const a = this.normalizeIndex(body.a, next.length)
+				const b = this.normalizeIndex(body.b, next.length)
+				if (a === null || b === null) return values
+				[next[a], next[b]] = [next[b], next[a]]
+				return next
+			}
+			case "move":
+				return this.moveRange(next, body)
+			case "clear":
+				return []
+			default:
+				return values
+		}
+	}
+
+	deleteRange(values, body = {}) {
+		const range = this.normalizeRange(body, values.length)
+		if (!range) return values
+		values.splice(range.start, range.end - range.start)
+		return values
+	}
+
+	moveRange(values, body = {}) {
+		const range = this.normalizeRange(body, values.length, "from", "end")
+		if (!range) return values
+		let to = this.normalizeIndex(body.to, values.length, true)
+		if (to === null) return values
+		const chunk = values.splice(range.start, range.end - range.start)
+		if (to > range.start) {
+			to -= chunk.length
+		}
+		values.splice(to, 0, ...chunk)
+		return values
+	}
+
+	normalizeRange(body, length, startName = "index", endName = "end") {
+		const start = this.normalizeIndex(body[startName], length, true)
+		if (start === null) return null
+		const rawEnd = body[endName] ?? (start + 1)
+		const end = this.normalizeIndex(rawEnd, length, true)
+		if (end === null || end < start) return null
+		return { start, end }
+	}
+
+	normalizeIndex(value, length, allowEnd = false) {
+		if (!Number.isInteger(value)) {
+			return null
+		}
+		const max = allowEnd ? length : (length - 1)
+		return value < 0 || value > max ? null : value
+	}
+
+	sameValue(a, b) {
+		return isSameJSON(this.bridge.serialize(a), this.bridge.serialize(b))
+	}
+
+	emitChange(before, direction) {
+		const after = this.snapshot()
+		if (
+			isSameJSON(this.bridge.serialize(before.values), this.bridge.serialize(after.values)) &&
+			isSameJSON(before.revision, after.revision)
+		) {
+			return this
+		}
+		for (const callback of this.state.subscribers) {
+			callback({ before, after }, this, direction)
+		}
+		return this
 	}
 }
 
@@ -536,14 +789,7 @@ class StoredObjectBridge {
 		const end = options.end === undefined ? start + count : options.end
 		const query = this.relationQuery(options)
 		const data = await this.request("GET", `${this.relationPath(type, id, name)}/list/${start}:${end}${query}`)
-		return {
-			start: data.start,
-			end: data.end,
-			count: data.count,
-			total: data.total,
-			revision: data.revision,
-			values: (data.values || []).map((_) => this.deserialize(_)),
-		}
+		return this.deserializeRelationPage(data)
 	}
 
 	async relationList(type, id, name, options = {}) {
@@ -583,7 +829,14 @@ class StoredObjectBridge {
 		}
 		const query = this.relationQuery(options, new Set(["revision"]))
 		const response = await this.request("POST", `${this.relationPath(type, id, name)}/${encodeURIComponent(String(operation))}${query}`, data)
-		return this.deserialize(response)
+		return this.deserializeRelationPage(response)
+	}
+
+	deserializeRelationPage(data) {
+		return {
+			...data,
+			values: (data?.values || []).map((_) => this.deserialize(_)),
+		}
 	}
 
 	trackObject(object) {
@@ -766,16 +1019,43 @@ class StoredObjectBridge {
 		if (data.value && this.isObjectExport(data.value)) {
 			const object = this.hydrate(data.value, data.target?.type)
 			this.trackObject(object)
+			this.updateLiveRelations(object, data)
 		} else if (data.type !== undefined && data.id !== undefined) {
 			const object = this.objects.get(this.cacheKey(this.routeType(data.type), data.id))
 			if (object && name === "remove") {
 				object.emitChange(object.snapshot(), "remote")
+			}
+			if (object) {
+				this.updateLiveRelations(object, data)
 			}
 		}
 		if (data.relations) {
 			for (const relation of Object.values(data.relations)) {
 				this.trackReferences(relation.added || [])
 			}
+		}
+		return this
+	}
+
+	updateLiveRelations(object, data) {
+		const relations = data.relations
+		if (!object || !relations || typeof relations !== "object") {
+			return this
+		}
+		const targetName = data.target?.kind === "relation" ? data.target.name : undefined
+		for (const name of Object.keys(relations)) {
+			if (targetName && name !== targetName) {
+				continue
+			}
+			const relation = object.relation(name)
+			if (!relation.state.loaded) {
+				continue
+			}
+			if (relation.state.pending > 0) {
+				relation.state.refreshQueued = true
+				continue
+			}
+			void relation.refresh().catch((error) => this.reportLiveError(error))
 		}
 		return this
 	}
@@ -1074,6 +1354,9 @@ class StoredObjectBridge {
 		if (Array.isArray(value)) {
 			return value.map((_) => this.deserialize(_))
 		}
+		if (value instanceof StoredObject) {
+			return value
+		}
 		if (this.isObjectExport(value)) {
 			return this.hydrate(value)
 		}
@@ -1217,8 +1500,11 @@ class StoredObjectBridge {
 	isObjectExport(value) {
 		return !!(
 			value &&
+			!(value instanceof StoredObject) &&
 			typeof value === "object" &&
 			!Array.isArray(value) &&
+			value.relation === undefined &&
+			value.values === undefined &&
 			value.id !== undefined &&
 			value.type !== undefined
 		)

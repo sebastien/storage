@@ -7,6 +7,10 @@ try:
 		DirectoryBackend,
 		A,
 		B,
+		User,
+		Project,
+		OwnedTask,
+		OwnedComment,
 		PrefixedUser,
 		PrefixedAttachment,
 	)
@@ -19,6 +23,10 @@ except ModuleNotFoundError:
 		DirectoryBackend,
 		A,
 		B,
+		User,
+		Project,
+		OwnedTask,
+		OwnedComment,
 		PrefixedUser,
 		PrefixedAttachment,
 	)
@@ -34,7 +42,7 @@ class StoredObjectTest(unittest.TestCase):
 			self.raw.release()
 		self.path = os.path.basename(__file__).split(".")[0]
 		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(
-			Message, A, B, PrefixedUser
+			Message, A, B, User, Project, OwnedTask, OwnedComment, PrefixedUser
 		)
 		self.raw = RawStorage(DirectoryBackend(self.path)).use(
 			Attachment, PrefixedAttachment
@@ -42,6 +50,10 @@ class StoredObjectTest(unittest.TestCase):
 		self.assertIsNotNone(Message.STORAGE)
 		self.assertIsNotNone(A.STORAGE)
 		self.assertIsNotNone(B.STORAGE)
+		self.assertIsNotNone(User.STORAGE)
+		self.assertIsNotNone(Project.STORAGE)
+		self.assertIsNotNone(OwnedTask.STORAGE)
+		self.assertIsNotNone(OwnedComment.STORAGE)
 		self.assertIsNotNone(PrefixedUser.STORAGE)
 		self.assertIsNotNone(PrefixedAttachment.STORAGE)
 
@@ -92,11 +104,11 @@ class StoredObjectTest(unittest.TestCase):
 		)
 		assert A.Get(id).value == "Pouet!"
 		# We change the physical file
-		with open(self.path + "/A/" + str(id) + ".json") as f:
+		with open(self.path + "/A/0/" + str(id) + ".json") as f:
 			data = json.load(f)
 		assert data["value"] == "Pouet!"
 		data["value"] = "Changed!"
-		with open(self.path + "/A/" + str(id) + ".json", "w") as f:
+		with open(self.path + "/A/0/" + str(id) + ".json", "w") as f:
 			json.dump(data, f)
 
 	def testIdentifierIDPrefix(self):
@@ -122,6 +134,51 @@ class StoredObjectTest(unittest.TestCase):
 		id = a.id
 		assert PrefixedAttachment.Has(id)
 		assert list(PrefixedAttachment.Get(id).data()) == ["pouetpouet"]
+
+	def testOwnershipRequired(self):
+		task = OwnedTask(name="Todo")
+		self.assertRaises(ValueError, task.save)
+
+	def testOwnershipTypeAndImmutability(self):
+		project = Project(name="Storage").save()
+		other = Project(name="Archive").save()
+		task = OwnedTask(name="Todo", owner=project).save()
+		self.assertIs(task.owner, project)
+		self.assertEqual(task.id, (project.id, task.getLocalID()))
+		self.assertRaises(ValueError, task.setOwner, other)
+
+	def testOwnedBy(self):
+		project = Project(name="Storage").save()
+		other = Project(name="Archive").save()
+		task = OwnedTask(name="Todo", owner=project).save()
+		OwnedTask(name="Elsewhere", owner=other).save()
+		self.assertEqual([task.id], [_.id for _ in OwnedTask.OwnedBy(project)])
+		self.assertEqual(task.id, OwnedTask.Get(project.id, task.getLocalID()).id)
+		self.assertEqual(task.id, OwnedTask.Get(task.id).id)
+
+	def testOwnershipExportRestore(self):
+		project = Project(name="Storage").save()
+		task = OwnedTask(name="Todo", owner=project).save()
+		exported = task.export()
+		self.assertEqual(tuple(exported["id"]), task.id)
+		self.assertEqual(OwnedTask.Get(task.id).owner.id, project.id)
+
+	def testOwnershipCascadeDelete(self):
+		project = Project(name="Storage").save()
+		comment = OwnedComment(body="Hi", owner=project).save()
+		project.remove()
+		self.assertFalse(OwnedComment.Has(comment.id))
+
+	def testOwnershipPath(self):
+		project = Project(name="Storage").save()
+		task = OwnedTask(name="Todo", owner=project).save()
+		owner_path = os.path.join(
+			self.path,
+			"OwnedTask",
+			str(project.id),
+			str(task.getLocalID()) + ".json",
+		)
+		self.assertTrue(os.path.exists(owner_path))
 
 
 if __name__ == "__main__":

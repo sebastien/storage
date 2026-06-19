@@ -35,6 +35,24 @@ class PrefixedAttachment(StoredRaw):
 	ID_PREFIX = "FILE"
 
 
+class User(StoredObject):
+	PROPERTIES = dict(name=Types.STRING)
+
+
+class Project(StoredObject):
+	PROPERTIES = dict(name=Types.STRING)
+
+
+class OwnedTask(StoredObject):
+	OWNERSHIP = lambda: Project.Owns(required=True, cascade=False)
+	PROPERTIES = dict(name=Types.STRING)
+
+
+class OwnedComment(StoredObject):
+	OWNERSHIP = lambda: Project.Owns(required=True, cascade=True)
+	PROPERTIES = dict(body=Types.STRING)
+
+
 class Message(StoredObject):
 	RELATIONS = lambda _: dict(
 		replyTo=[Message], references=[Message], attachments=[Attachment]
