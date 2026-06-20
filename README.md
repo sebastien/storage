@@ -124,6 +124,8 @@ uses the [`extra`](deps/extra/) microservice framework (bundled).
 
 - [`docs/ref-storage.md`](docs/ref-storage.md): complete reference for object storage, raw storage, metrics, types, indexes, and backends.
 - [`docs/ref-storage-web.md`](docs/ref-storage-web.md): REST API routing, `@http` decorator, SSE channels, commands endpoint, and JavaScript bridge.
+- [`docs/ref-queries.md`](docs/ref-queries.md): transient `StoredQuery` usage, owner-scoped sync subscriptions, and query delta payloads.
+- [`docs/ref-migrations.md`](docs/ref-migrations.md): migration files, `MigrationOperator`, metadata, and execution workflow.
 
 ### Notable examples
 

@@ -250,6 +250,15 @@ class JournalBackend(StorageBackend):
 	def path(self, key):
 		return self.backend.path(key)
 
+	def getMetadata(self, key=None, default=None):
+		return self.backend.getMetadata(key, default)
+
+	def setMetadata(self, key, value):
+		return self.backend.setMetadata(key, value)
+
+	def removeMetadata(self, key):
+		return self.backend.removeMetadata(key)
+
 	def stream(self, key, size=None):
 		return self.backend.stream(key, size)
 

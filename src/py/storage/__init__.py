@@ -16,5 +16,11 @@ from .backends.sqlite import KVSqliteBackend as KVSqliteBackend
 from .backends.journal import JournalBackend as JournalBackend
 from .backends.journal import JournalPersistence as JournalPersistence
 from .backends.journal import MemoryJournalPersistence as MemoryJournalPersistence
+from .migrations import MigrationOperator as MigrationOperator
+from .schema import SCHEMA_METADATA_KEY as SCHEMA_METADATA_KEY
+from .schema import Schema as Schema
+from .schema import SchemaValidator as SchemaValidator
+from .schema import changes as schemaChanges  # noqa: F401
+from .query import StoredQuery as StoredQuery
 
 # EOF

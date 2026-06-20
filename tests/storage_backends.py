@@ -16,6 +16,7 @@ import io
 import time
 import os
 import shutil
+import glob
 
 # -----------------------------------------------------------------------------
 #
@@ -102,6 +103,12 @@ CLASS = [datetime.timedelta()]
 
 GENERATORS = [(_ for _ in range(20))]
 LAMBDA = [lambda x: x**2]
+
+def _removeDBMFiles(path):
+	for candidate in glob.glob(path + "*"):
+		if os.path.isfile(candidate):
+			os.remove(candidate)
+
 
 # -----------------------------------------------------------------------------
 #
@@ -361,14 +368,12 @@ class AbstractBackendTest:
 class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 	def _createBackend(self):
 		# erase the file to clear the database
-		if os.path.exists(self.path + ".dbm"):
-			os.remove(self.path + ".dbm")
+		_removeDBMFiles(self.path + ".dbm")
 		return storage.DBMBackend(self.path)
 
 	def tearDown(self):
 		self.backend.close()
-		if os.path.exists(self.path + ".dbm"):
-			os.remove(self.path + ".dbm")
+		_removeDBMFiles(self.path + ".dbm")
 
 	def testClose(self):
 		# setup
@@ -442,6 +447,13 @@ class SQLiteBackendTest(AbstractBackendTest, unittest.TestCase):
 		self.assertListEqual([b"ab", b"cd", b"ef"], list(self.backend.streamRawData("blob", size=2)))
 		self.assertRaises(NotImplementedError, self.backend.getRawDataPath, "blob")
 
+	def testMetadata(self):
+		self.backend.setMetadata("migrations.applied", {"1-a": {"id": "1"}})
+		self.assertEqual({"1-a": {"id": "1"}}, self.backend.getMetadata("migrations.applied"))
+		self.assertEqual(self.backend.count(), len(list(self.backend.keys())))
+		self.backend.removeMetadata("migrations.applied")
+		self.assertIsNone(self.backend.getMetadata("migrations.applied"))
+
 
 # -----------------------------------------------------------------------------
 #
@@ -453,6 +465,13 @@ class SQLiteBackendTest(AbstractBackendTest, unittest.TestCase):
 class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 	def _createBackend(self):
 		return storage.MemoryBackend()
+
+	def testMetadata(self):
+		self.backend.setMetadata("migrations.applied", {"1-a": {"id": "1"}})
+		self.assertEqual({"1-a": {"id": "1"}}, self.backend.getMetadata("migrations.applied"))
+		self.assertEqual(self.backend.count(), len(list(self.backend.keys())))
+		self.backend.clear()
+		self.assertEqual({}, self.backend.getMetadata())
 
 
 # -----------------------------------------------------------------------------
@@ -614,6 +633,34 @@ class DirectoryBackendTest(AbstractBackendTest, unittest.TestCase):
 			self.backend.writeFile(self.backend.root + "key_" + repr(i), repr(v))
 			val = self.backend.readFile(self.backend.root + "key_" + repr(i))
 			self.assertMultiLineEqual(val.decode("utf-8"), repr(v))
+
+	def testMetadata(self):
+		self.backend.setMetadata("migrations.applied", {"1-a": {"id": "1"}})
+		self.assertEqual({"1-a": {"id": "1"}}, self.backend.getMetadata("migrations.applied"))
+		self.assertEqual(self.backend.count(), len(list(self.backend.keys())))
+		metadata_path = os.path.join(self.backend.root, ".storage", "metadata.json")
+		self.assertTrue(os.path.exists(metadata_path))
+		self.backend.clear()
+		self.assertEqual({}, self.backend.getMetadata())
+		self.assertFalse(os.path.exists(metadata_path))
+
+
+class DBMBackendMetadataTest(unittest.TestCase):
+	def setUp(self):
+		self.path = "./test-dbm-metadata"
+		_removeDBMFiles(self.path + ".dbm")
+		self.backend = storage.DBMBackend(self.path)
+
+	def tearDown(self):
+		self.backend.close()
+		_removeDBMFiles(self.path + ".dbm")
+
+	def testMetadata(self):
+		self.backend.add("User.1", "A")
+		self.backend.setMetadata("migrations.applied", {"1-a": {"id": "1"}})
+		self.assertEqual({"1-a": {"id": "1"}}, self.backend.getMetadata("migrations.applied"))
+		self.assertEqual(["User.1"], list(self.backend.keys()))
+		self.assertEqual(1, self.backend.count())
 
 
 if __name__ == "__main__":

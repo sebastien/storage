@@ -186,6 +186,18 @@ class StorageBackend:
 	def keys(self, collection=None, order=ORDER_NONE):
 		raise Exception("Backend.keys not implemented")
 
+	def getMetadata(self, key=None, default=None):
+		"""Returns backend-owned metadata, optionally scoped to `key`."""
+		raise NotImplementedError
+
+	def setMetadata(self, key, value):
+		"""Sets backend-owned metadata for `key`."""
+		raise NotImplementedError
+
+	def removeMetadata(self, key):
+		"""Removes backend-owned metadata for `key`."""
+		raise NotImplementedError
+
 	def path(self, key):
 		"""Returns the physical path of the file used to store
 		the key, if any."""
@@ -309,6 +321,21 @@ class MultiBackend(StorageBackend):
 		if not self._readBackend:
 			raise RuntimeError(f"Undefined read backend: {self}")
 		return self._readBackend.keys(collection, order)
+
+	def getMetadata(self, key=None, default=None):
+		if not self._readBackend:
+			raise RuntimeError(f"Undefined read backend: {self}")
+		return self._readBackend.getMetadata(key, default)
+
+	def setMetadata(self, key, value):
+		for backend in self.backends:
+			backend.setMetadata(key, value)
+		return value
+
+	def removeMetadata(self, key):
+		for backend in self.backends:
+			backend.removeMetadata(key)
+		return self
 
 	def path(self, key):
 		"""Returns the physical path of the file used to store

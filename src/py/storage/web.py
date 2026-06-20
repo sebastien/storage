@@ -3,6 +3,7 @@ import json
 import time
 import types
 import sys
+from html import escape
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import unquote
@@ -20,6 +21,7 @@ except ImportError:
 
 from .core import Storable, getCanonicalName, isSame, restore
 from .raw import StoredRaw
+from .query import StoredQuery
 
 
 # FIXME: It seems that sometimes when one element is sent as a field value
@@ -168,7 +170,7 @@ class StorageChannel:
 			).payload(dict(operation="channel"))
 		op = command.get("op")
 		if op == "subscribe":
-			return self.subscribe(command.get("target"))
+			return self.subscribe(command.get("target"), snapshot=bool(command.get("snapshot")))
 		elif op == "unsubscribe":
 			return self.unsubscribe(command.get("target"))
 		elif op == "heartbeat":
@@ -198,12 +200,14 @@ class StorageChannel:
 				expected='Supported channel operations: "subscribe", "unsubscribe", "heartbeat", "block", "flush", "unblock", "close".',
 			).payload(dict(operation="channel"))
 
-	def subscribe(self, target):
+	def subscribe(self, target, snapshot=False):
 		resolved, error = self.server.resolveJournalTarget(target)
 		if error:
 			return error.payload(dict(operation="channel", op="subscribe"))
 		sub_id = self.subscriptionID(resolved)
 		if sub_id in self.subscriptions:
+			if snapshot:
+				self.enqueueSnapshot(self.subscriptions[sub_id])
 			return dict(ok=True, op="subscribe", target=target, duplicate=True)
 
 		def callback(key, operation, entry):
@@ -212,6 +216,8 @@ class StorageChannel:
 		resolved["callback"] = callback
 		resolved["backend"].subscribe(resolved["key"], callback)
 		self.subscriptions[sub_id] = resolved
+		if snapshot:
+			self.enqueueSnapshot(resolved)
 		return dict(ok=True, op="subscribe", target=target)
 
 	def unsubscribe(self, target):
@@ -239,6 +245,16 @@ class StorageChannel:
 				self.enqueueBatch(events)
 			return
 		target = resolved.get("target") or {}
+		if target.get("kind") == "query":
+			query = resolved.get("query")
+			data = query.eventFor(entry, resolved.get("backend")) if query else None
+			if not data:
+				return
+			if self.blocked:
+				self.pendingEvents.append(data)
+			else:
+				self.enqueue(data.get("event", "query"), data, id=data.get("seq"))
+			return
 		if target.get("kind") == "relation":
 			relations = entry.get("relations") or {}
 			if target.get("name") not in relations:
@@ -255,10 +271,16 @@ class StorageChannel:
 
 	def batchEntries(self, resolved, entries):
 		res = []
+		query = resolved.get("query")
 		for entry in entries:
 			key = entry.get("key")
 			operation = entry.get("operation")
 			target = resolved.get("target") or {}
+			if target.get("kind") == "query":
+				data = query.eventFor(entry, resolved.get("backend")) if query else None
+				if data:
+					res.append(data)
+				continue
 			if target.get("kind") == "relation":
 				relations = entry.get("relations") or {}
 				if target.get("name") not in relations:
@@ -270,6 +292,15 @@ class StorageChannel:
 			data["target"] = target
 			res.append(data)
 		return res
+
+	def enqueueSnapshot(self, resolved):
+		query = resolved.get("query")
+		backend = resolved.get("backend")
+		if not query or not backend or not hasattr(backend, "getCursor"):
+			return self
+		payload = query.snapshot(cursor=backend.getCursor())
+		self.enqueue("snapshot", payload, id=payload.get("cursor"))
+		return self
 
 	def flushPending(self):
 		if not self.pendingEvents:
@@ -355,10 +386,16 @@ class StorageChannel:
 class StorageServer(Service):
 	"""An Extra service that exposes storables through a REST-like API."""
 
+	UNSCOPED = object()
+
 	LIST_COUNT = 20
 	CHANNEL_HEARTBEAT = 15
 	CHANNEL_TTL = 45
 	CHANNEL_QUEUE_SIZE = 1000
+	FORMAT_CONTENT_TYPES = {
+		"md": "text/markdown; charset=utf-8",
+		"xml": "application/xml; charset=utf-8",
+	}
 
 	def __init__(self, prefix="/api", classes=None, readonly=False):
 		prefix = prefix.strip("/")
@@ -386,6 +423,99 @@ class StorageServer(Service):
 			self.storableClasses.append(s)
 		self._handlers = None
 		return self
+
+	def inferOwner(self, request, storableClass):
+		return self.UNSCOPED
+
+	def resolvedOwner(self, request, storableClass):
+		ownership = (
+			storableClass.GetOwnership()
+			if hasattr(storableClass, "GetOwnership")
+			else None
+		)
+		return self.inferOwner(request, storableClass) if ownership else self.UNSCOPED
+
+	def isScoped(self, owner):
+		return owner is not self.UNSCOPED
+
+	def scopedGet(self, request, storableClass, sid):
+		owner = self.resolvedOwner(request, storableClass)
+		return (
+			storableClass.Get(sid, owner=owner)
+			if self.isScoped(owner)
+			else storableClass.Get(sid)
+		)
+
+	def scopedExport(self, request, storableClass, sid, **options):
+		owner = self.resolvedOwner(request, storableClass)
+		value = (
+			storableClass.Export(sid, owner=owner, **options)
+			if self.isScoped(owner)
+			else storableClass.Export(sid, **options)
+		)
+		return self.toPublicValue(value, request)
+
+	def applyScopedOwner(self, request, storableClass, data):
+		owner = self.resolvedOwner(request, storableClass)
+		if not self.isScoped(owner):
+			return data, owner
+		if data is None:
+			data = {}
+		if not isinstance(data, dict):
+			raise StorageWebError(
+				"BADPAYLOAD",
+				"Invalid storage create payload.",
+				"Owned storage create payloads must be a JSON object or empty body.",
+				received=self.describeValue(data),
+				expected="A JSON object or empty body.",
+			)
+		data = dict(data)
+		data["owner"] = owner
+		return data, owner
+
+	def scopedList(self, request, storableClass, start=0, end=None):
+		owner = self.resolvedOwner(request, storableClass)
+		values = (
+			storableClass.OwnedBy(owner)
+			if self.isScoped(owner)
+			else storableClass.List(start=start, end=end)
+		)
+		for index, value in enumerate(values):
+			if self.isScoped(owner):
+				if index < start:
+					continue
+				if end is not None and index >= end:
+					break
+			yield value
+
+	def publicID(self, storableClass, value, request):
+		if (
+			self.isScoped(self.resolvedOwner(request, storableClass))
+			and hasattr(storableClass, "GetOwnership")
+			and storableClass.GetOwnership()
+			and isinstance(value, (tuple, list))
+			and len(value) == 2
+		):
+			return value[1]
+		return value
+
+	def toPublicValue(self, value, request):
+		if isinstance(value, list):
+			return [self.toPublicValue(_, request) for _ in value]
+		if isinstance(value, tuple):
+			return [self.toPublicValue(_, request) for _ in value]
+		if not isinstance(value, dict):
+			return value
+		result = {
+			key: self.toPublicValue(item, request)
+			for key, item in value.items()
+		}
+		if "type" in result and "id" in result:
+			match = self.resolveStorable(result.get("type"))
+			if match:
+				storableClass, _info = match
+				result["id"] = self.publicID(storableClass, result["id"], request)
+		return result
 
 	def kv(self, name, store, readonly=None, export=None):
 		"""Registers a named KV store for HTTP exposure."""
@@ -456,11 +586,132 @@ class StorageServer(Service):
 		page = items[start:end]
 		return dict(start=start, end=end, count=len(page), total=len(items), values=page)
 
-	def onKVDescribe(self, request, name):
+	def respondFormatted(self, request, value, format=None, status=200):
+		format = format or self.requestFormat(request)
+		if format == "md":
+			return request.respond(
+				self.formatMarkdown(value),
+				contentType=self.FORMAT_CONTENT_TYPES["md"],
+				status=status,
+			)
+		elif format == "xml":
+			return request.respond(
+				self.formatXML(value),
+				contentType=self.FORMAT_CONTENT_TYPES["xml"],
+				status=status,
+			)
+		return request.returns(value, status=status)
+
+	def formatMarkdown(self, value):
+		lines = self._markdownLines(value)
+		return "\n".join(lines or ["- null"]) + "\n"
+
+	def _markdownLines(self, value, indent=0, name=None):
+		prefix = " " * indent
+		if isinstance(value, dict):
+			lines = []
+			if name is not None:
+				lines.append("%s- %s:" % (prefix, name))
+			for key, item in value.items():
+				lines.extend(self._markdownLines(item, indent + (2 if name is not None else 0), str(key)))
+			if lines:
+				return lines
+			if name is not None:
+				return ["%s- %s: {}" % (prefix, name)]
+			return ["%s- {}" % prefix]
+		elif isinstance(value, list):
+			lines = []
+			if name is not None:
+				lines.append("%s- %s:" % (prefix, name))
+				indent += 2
+				prefix = " " * indent
+			for item in value:
+				if isinstance(item, (dict, list)):
+					lines.append("%s-" % prefix)
+					lines.extend(self._markdownLines(item, indent + 2))
+				else:
+					lines.append("%s- %s" % (prefix, self._markdownScalar(item)))
+			if lines:
+				return lines
+			if name is not None:
+				return ["%s- %s: []" % (" " * (indent - 2), name)]
+			return ["%s- []" % prefix]
+		text = self._markdownScalar(value)
+		if name is None:
+			return ["%s- %s" % (prefix, text)]
+		return ["%s- %s: %s" % (prefix, name, text)]
+
+	def _markdownScalar(self, value):
+		if value is None:
+			return "null"
+		elif value is True:
+			return "true"
+		elif value is False:
+			return "false"
+		return str(value)
+
+	def formatXML(self, value):
+		body = self._xmlValue(value, "response")
+		return '<?xml version="1.0" encoding="utf-8"?>\n%s\n' % body
+
+	def _xmlValue(self, value, name):
+		tag = self._xmlTag(name)
+		if isinstance(value, dict):
+			if not value:
+				return "<%s/>" % tag
+			children = []
+			for key, item in value.items():
+				children.append(self._xmlValue(item, str(key)))
+			return "<%s>%s</%s>" % (tag, "".join(children), tag)
+		elif isinstance(value, list):
+			if not value:
+				return "<%s/>" % tag
+			children = "".join(self._xmlValue(item, "item") for item in value)
+			return "<%s>%s</%s>" % (tag, children, tag)
+		return "<%s>%s</%s>" % (tag, escape(self._xmlScalar(value)), tag)
+
+	def _xmlScalar(self, value):
+		if value is None:
+			return ""
+		elif value is True:
+			return "true"
+		elif value is False:
+			return "false"
+		return str(value)
+
+	def _xmlTag(self, name):
+		text = str(name or "item")
+		chars = []
+		for i, char in enumerate(text):
+			if char.isalnum() or char in ("_", "-", "."):
+				if i == 0 and char.isdigit():
+					chars.append("n")
+				chars.append(char)
+			else:
+				chars.append("-")
+		return "".join(chars) or "item"
+
+	def requestFormat(self, request):
+		path = getattr(request, "path", "") or ""
+		if path.endswith(".md"):
+			return "md"
+		elif path.endswith(".xml"):
+			return "xml"
+		return None
+
+	def stripFormatSuffix(self, value, format):
+		if format == "md" and isinstance(value, str) and value.endswith(".md"):
+			return value[:-3]
+		elif format == "xml" and isinstance(value, str) and value.endswith(".xml"):
+			return value[:-4]
+		return value
+
+	def onKVDescribe(self, request, name, format=None):
 		info = self.resolveKV(name)
 		if not info:
 			return request.notFound()
-		return request.returns(
+		return self.respondFormatted(
+			request,
 			dict(
 				name=info["name"],
 				readonly=info["readonly"],
@@ -475,28 +726,41 @@ class StorageServer(Service):
 					"clear",
 					"commands",
 				),
-			)
+			),
+			format=format,
 		)
 
-	def onKVSize(self, request, name):
+	def onKVSize(self, request, name, format=None):
 		info = self.resolveKV(name)
 		if not info:
 			return request.notFound()
-		return request.returns(dict(name=info["name"], size=info["store"].size()))
+		return self.respondFormatted(
+			request, dict(name=info["name"], size=info["store"].size()), format=format
+		)
 
-	def onKVHas(self, request, name, key):
+	def onKVHas(self, request, name, key, format=None):
+		format = format or self.requestFormat(request)
 		info = self.resolveKV(name)
 		if not info:
 			return request.notFound()
-		key = self.kvKey(key)
-		return request.returns(dict(name=info["name"], key=key, value=info["store"].has(key)))
+		key = self.stripFormatSuffix(self.kvKey(key), format)
+		return self.respondFormatted(
+			request,
+			dict(name=info["name"], key=key, value=info["store"].has(key)),
+			format=format,
+		)
 
-	def onKVGet(self, request, name, key):
+	def onKVGet(self, request, name, key, format=None):
+		format = format or self.requestFormat(request)
 		info = self.resolveKV(name)
 		if not info:
 			return request.notFound()
-		key = self.kvKey(key)
-		return request.returns(dict(name=info["name"], key=key, value=info["store"].get(key)))
+		key = self.stripFormatSuffix(self.kvKey(key), format)
+		return self.respondFormatted(
+			request,
+			dict(name=info["name"], key=key, value=info["store"].get(key)),
+			format=format,
+		)
 
 	async def onKVSet(self, request, name, key):
 		info = self.resolveKV(name)
@@ -553,20 +817,22 @@ class StorageServer(Service):
 		info["store"].clear()
 		return request.returns(dict(name=info["name"], value=True))
 
-	def onKVList(self, request, name):
+	def onKVList(self, request, name, format=None):
 		info = self.resolveKV(name)
 		if not info:
 			return request.notFound()
 		prefix = request.param("prefix")
-		return request.returns(self.kvPage(info["store"].ilist(prefix), request))
+		return self.respondFormatted(
+			request, self.kvPage(info["store"].ilist(prefix), request), format=format
+		)
 
-	def onKVItems(self, request, name):
+	def onKVItems(self, request, name, format=None):
 		info = self.resolveKV(name)
 		if not info:
 			return request.notFound()
 		prefix = request.param("prefix")
 		values = [dict(key=key, value=value) for key, value in info["store"].iitems(prefix)]
-		return request.returns(self.kvPage(values, request))
+		return self.respondFormatted(request, self.kvPage(values, request), format=format)
 
 	async def onKVCommands(self, request, name):
 		info = self.resolveKV(name)
@@ -683,12 +949,20 @@ class StorageServer(Service):
 	async def onStorableCreate(self, storableClass, info, request):
 		if self.readonly:
 			return request.notAuthorized()
-		data = await request.loadData()
+		data, owner = self.applyScopedOwner(
+			request, storableClass, await request.loadData()
+		)
 		if data is not None:
 			storable = storableClass.Import(data).save()
 		else:
-			storable = storableClass()
-		return request.returns(storable.export(**info.getExportOptions()))
+			storable = (
+				storableClass(owner=owner)
+				if self.isScoped(owner)
+				else storableClass()
+			).save()
+		return request.returns(
+			self.toPublicValue(storable.export(**info.getExportOptions()), request)
+		)
 
 	async def onStorableUpdate(self, storableClass, info, request, sid):
 		sid = unquote(sid)
@@ -697,7 +971,7 @@ class StorageServer(Service):
 		try:
 			data = await request.loadParams()
 			self.validateUpdatePayload(data, dict(type=info.getName(), id=sid))
-			storable = self.applyStorableUpdate(storableClass, sid, data)
+			storable = self.applyStorableUpdate(request, storableClass, sid, data)
 		except StorageWebError as error:
 			return self.storageError(request, error, dict(type=info.getName(), id=sid))
 		except ValueError as error:
@@ -712,14 +986,23 @@ class StorageServer(Service):
 				),
 				dict(type=info.getName(), id=sid),
 			)
-		return request.returns(storable.export(**info.getExportOptions()))
+		return request.returns(
+			self.toPublicValue(storable.export(**info.getExportOptions()), request)
+		)
 
-	def applyStorableUpdate(self, storableClass, sid, data):
+	def applyStorableUpdate(self, request, storableClass, sid, data):
 		data = dict(data or {})
-		storable = storableClass.Get(sid)
+		owner = self.resolvedOwner(request, storableClass)
+		storable = (
+			storableClass.Get(sid, owner=owner)
+			if self.isScoped(owner)
+			else storableClass.Get(sid)
+		)
 		if not storable:
 			if "id" not in data:
 				data["id"] = sid
+			if self.isScoped(owner):
+				data["owner"] = owner
 			storable = storableClass.Import(data)
 			storable.save()
 		else:
@@ -765,7 +1048,7 @@ class StorageServer(Service):
 				for backend in self.iterJournalBackends():
 					batches.append((backend, backend.beginBatch()))
 			for index, command in enumerate(commands):
-				result = await self.onCommand(command, index=index)
+				result = await self.onCommand(request, command, index=index)
 				results.append(result)
 		finally:
 			for backend, batch in reversed(batches):
@@ -775,7 +1058,7 @@ class StorageServer(Service):
 			res["transaction"] = True
 		return request.returns(res)
 
-	async def onCommand(self, command, index=None):
+	async def onCommand(self, request, command, index=None):
 		if not isinstance(command, dict):
 			return StorageWebError(
 				"BADITEM",
@@ -787,15 +1070,15 @@ class StorageServer(Service):
 		op = command.get("op")
 		try:
 			if op == "create":
-				return self.onCreateCommand(command, index=index)
+				return self.onCreateCommand(request, command, index=index)
 			elif op == "update":
-				return self.onUpdateCommand(command, index=index)
+				return self.onUpdateCommand(request, command, index=index)
 			elif op == "remove":
-				return self.onRemoveCommand(command, index=index)
+				return self.onRemoveCommand(request, command, index=index)
 			elif isinstance(op, str) and op.startswith("relation."):
-				return self.onRelationCommand(command, index=index)
+				return self.onRelationCommand(request, command, index=index)
 			elif op == "invoke":
-				return self.onInvokeCommand(command, index=index)
+				return self.onInvokeCommand(request, command, index=index)
 			else:
 				return StorageWebError(
 					"BADOP",
@@ -816,24 +1099,29 @@ class StorageServer(Service):
 				status=500,
 			).payload(dict(operation="commands", index=index, op=op))
 
-	def onCreateCommand(self, command, index=None):
+	def onCreateCommand(self, request, command, index=None):
 		match = self.commandMatch(command.get("type"))
 		storableClass, info = match
 		fields = command.get("fields")
+		fields, owner = self.applyScopedOwner(request, storableClass, fields)
 		if fields is not None:
 			self.validateUpdatePayload(fields, dict(type=info.getName(), index=index))
 			storable = storableClass.Import(fields).save()
 		else:
-			storable = storableClass()
+			storable = (
+				storableClass(owner=owner)
+				if self.isScoped(owner)
+				else storableClass()
+			).save()
 		return dict(
 			ok=True,
 			op="create",
 			type=info.getName(),
-			id=str(storable.id),
-			value=storable.export(**info.getExportOptions()),
+			id=self.publicID(storableClass, storable.id, request),
+			value=self.toPublicValue(storable.export(**info.getExportOptions()), request),
 		)
 
-	def onUpdateCommand(self, command, index=None):
+	def onUpdateCommand(self, request, command, index=None):
 		command_type = command.get("type")
 		sid = command.get("id")
 		fields = command.get("fields", {})
@@ -848,16 +1136,16 @@ class StorageServer(Service):
 			)
 		self.validateUpdatePayload(fields, dict(type=command_type, id=sid, index=index))
 		storableClass, info = match
-		storable = self.applyStorableUpdate(storableClass, str(sid), fields)
+		storable = self.applyStorableUpdate(request, storableClass, str(sid), fields)
 		return dict(
 			ok=True,
 			op="update",
 			type=command_type,
 			id=str(sid),
-			value=storable.export(**info.getExportOptions()),
+			value=self.toPublicValue(storable.export(**info.getExportOptions()), request),
 		)
 
-	def onRemoveCommand(self, command, index=None):
+	def onRemoveCommand(self, request, command, index=None):
 		match = self.commandMatch(command.get("type"))
 		sid = command.get("id")
 		if sid is None:
@@ -869,7 +1157,7 @@ class StorageServer(Service):
 				expected='An "id" string in the remove command.',
 			)
 		storableClass, info = match
-		storable = storableClass.Get(str(sid))
+		storable = self.scopedGet(request, storableClass, str(sid))
 		if not storable:
 			raise StorageWebError(
 				"NOTFOUND",
@@ -882,7 +1170,7 @@ class StorageServer(Service):
 		storable.remove()
 		return dict(ok=True, op="remove", type=info.getName(), id=str(sid), value=True)
 
-	def onRelationCommand(self, command, index=None):
+	def onRelationCommand(self, request, command, index=None):
 		op = str(command.get("op") or "")
 		operation = op.split(".", 1)[1] if "." in op else ""
 		match = self.commandMatch(command.get("type"))
@@ -906,7 +1194,7 @@ class StorageServer(Service):
 				status=404,
 			)
 		storableClass, info = match
-		storable = storableClass.Get(str(sid))
+		storable = self.scopedGet(request, storableClass, str(sid))
 		if not storable:
 			raise StorageWebError(
 				"NOTFOUND",
@@ -932,13 +1220,13 @@ class StorageServer(Service):
 				op=op,
 				type=info.getName(),
 				id=str(sid),
-				value=storable.export(**info.getExportOptions()),
+				value=self.toPublicValue(storable.export(**info.getExportOptions()), request),
 			)
 		page = self.relationPageData(storable, info, relation, name, command, operation=operation)
 		page["op"] = op
-		return page
+		return self.toPublicValue(page, request)
 
-	def onInvokeCommand(self, command, index=None):
+	def onInvokeCommand(self, request, command, index=None):
 		match = self.commandMatch(command.get("type"))
 		sid = command.get("id")
 		method_name = command.get("method")
@@ -960,7 +1248,7 @@ class StorageServer(Service):
 				status=404,
 			)
 		storableClass, info = match
-		storable = storableClass.Get(str(sid))
+		storable = self.scopedGet(request, storableClass, str(sid))
 		if not storable:
 			raise StorageWebError(
 				"NOTFOUND",
@@ -979,7 +1267,7 @@ class StorageServer(Service):
 			type=info.getName(),
 			id=str(sid),
 			method=method_name,
-			value=result,
+			value=self.toPublicValue(result, request),
 		)
 
 	def commandMatch(self, command_type):
@@ -1304,13 +1592,45 @@ class StorageServer(Service):
 				target=target,
 				info=info,
 			), None
+		elif kind == "query":
+			owner = target.get("owner")
+			ownership = storableClass.GetOwnership() if hasattr(storableClass, "GetOwnership") else None
+			if owner is None:
+				return None, StorageWebError(
+					"BADTARGET",
+					"Invalid storage channel query target.",
+					"An owner-scoped query target must include an owner id.",
+					received=dict(target=target),
+					expected='A target such as {"kind":"query","type":"members","owner":"user-1"}.',
+				)
+			if not ownership:
+				return None, StorageWebError(
+					"UNSUPPORTED",
+					"Storage query target is not supported.",
+					"Owner-scoped queries currently require a stored object type that declares OWNERSHIP.",
+					received=dict(type=target.get("type"), target=target),
+					expected="A stored object type with OWNERSHIP metadata.",
+				)
+			query = StoredQuery(
+				storableClass,
+				owner=owner,
+				target=dict(kind="query", type=target.get("type"), owner=owner),
+				export=info.getExportOptions(),
+			)
+			return dict(
+				backend=backend,
+				key=query.prefix(),
+				query=query,
+				target=query.target,
+				info=info,
+			), None
 		else:
 			return None, StorageWebError(
 				"BADTARGET",
 				"Unsupported storage channel target.",
 				"The storage channel target kind is not supported: %s." % kind,
 				received=dict(kind=kind, target=target),
-				expected='Supported target kinds: "object", "type", "relation".',
+				expected='Supported target kinds: "object", "type", "relation", "query".',
 			)
 
 	def journalBackend(self, storableClass):
@@ -1356,28 +1676,38 @@ class StorageServer(Service):
 		sid = unquote(sid)
 		if self.readonly:
 			return request.notAuthorized()
-		storable = storableClass.Get(sid)
+		storable = self.scopedGet(request, storableClass, sid)
 		if storable:
 			storable.remove()
 			return request.returns(True)
 		else:
 			return request.notFound()
 
-	def onStorableGet(self, storableClass, info, request, sid):
-		sid = unquote(sid)
-		storable = storableClass.Get(sid)
+	def onStorableGet(self, storableClass, info, request, sid, format=None):
+		format = format or self.requestFormat(request)
+		sid = self.stripFormatSuffix(unquote(sid), format)
+		storable = self.scopedGet(request, storableClass, sid)
 		if not storable:
 			if request.param("strict") is not None:
 				return request.notFound()
 			else:
-				return request.returns(storableClass.Export(sid, **info.getExportOptions()))
-		return request.returns(storable.export(**info.getExportOptions()))
+				return self.respondFormatted(
+					request,
+					self.scopedExport(request, storableClass, sid, **info.getExportOptions()),
+					format=format,
+				)
+		return self.respondFormatted(
+			request,
+			self.toPublicValue(storable.export(**info.getExportOptions()), request),
+			format=format,
+		)
 
 	async def onStorableInvokeMethod(
-		self, storableClass, name, contentType, request, sid, *args, **kwargs
+		self, storableClass, name, contentType, request, sid, *args, format=None, **kwargs
 	):
+		format = format or self.requestFormat(request)
 		sid = unquote(sid)
-		storable = storableClass.Get(sid)
+		storable = self.scopedGet(request, storableClass, sid)
 		if not storable:
 			return request.notFound()
 		method = getattr(storable, name)
@@ -1410,7 +1740,9 @@ class StorageServer(Service):
 		kwargs = dict((k, restore(v)) for k, v in list(kwargs.items())) if kwargs else {}
 		result = method(*args, **kwargs)
 		if not contentType:
-			return request.returns(result)
+			return self.respondFormatted(
+				request, self.toPublicValue(result, request), format=format
+			)
 		if isinstance(contentType, types.FunctionType):
 			contentType = contentType(storable)
 		return request.respond(result, contentType=contentType)
@@ -1419,16 +1751,20 @@ class StorageServer(Service):
 		method = getattr(storableClass, name)
 		return request.returns(method(*args, **kwargs))
 
-	def onStorableList(self, storableClass, info, request, start=0, end=None):
+	def onStorableList(self, storableClass, info, request, start=0, end=None, format=None):
 		options = info.getExportOptions()
 		if end is None:
 			end = start + self.LIST_COUNT
-		res = [_.export(**options) for _ in storableClass.List(start=start, end=end)]
-		return request.returns(dict(start=start, end=end, count=len(res), values=res))
+		res = [_.export(**options) for _ in self.scopedList(request, storableClass, start=start, end=end)]
+		return self.respondFormatted(
+			request,
+			self.toPublicValue(dict(start=start, end=end, count=len(res), values=res), request),
+			format=format,
+		)
 
-	def onStorableRelations(self, storableClass, info, request, sid):
+	def onStorableRelations(self, storableClass, info, request, sid, format=None):
 		sid = unquote(sid)
-		storable = storableClass.Get(sid)
+		storable = self.scopedGet(request, storableClass, sid)
 		if not storable:
 			return request.notFound()
 		res = {}
@@ -1440,38 +1776,54 @@ class StorageServer(Service):
 				count=len(relation),
 				revision=storable.getUpdateTime(name),
 			)
-		return request.returns(dict(type=info.getName(), id=sid, relations=res))
+		return self.respondFormatted(
+			request,
+			self.toPublicValue(dict(type=info.getName(), id=sid, relations=res), request),
+			format=format,
+		)
 
-	def onStorableRelationCount(self, storableClass, info, request, sid, name):
+	def onStorableRelationCount(self, storableClass, info, request, sid, name, format=None):
+		format = format or self.requestFormat(request)
 		sid = unquote(sid)
-		storable = storableClass.Get(sid)
+		storable = self.scopedGet(request, storableClass, sid)
 		if not storable:
 			return request.notFound()
 		try:
 			relation = self.getStorableRelation(storable, name)
 		except StorageWebError as error:
 			return self.storageError(request, error, dict(type=info.getName(), id=sid))
-		return request.returns(
+		return self.respondFormatted(
+			request,
 			dict(
 				type=info.getName(),
 				id=sid,
 				relation=name,
 				count=len(relation),
 				revision=storable.getUpdateTime(name),
-			)
+			),
+			format=format,
 		)
 
-	def onStorableRelationGet(self, storableClass, info, request, sid, name, start=0, end=None):
+	def onStorableRelationGet(
+		self, storableClass, info, request, sid, name, start=0, end=None, format=None
+	):
+		format = format or self.requestFormat(request)
 		sid = unquote(sid)
-		storable = storableClass.Get(sid)
+		name = self.stripFormatSuffix(name, format)
+		storable = self.scopedGet(request, storableClass, sid)
 		if not storable:
 			return request.notFound()
 		try:
 			relation = self.getStorableRelation(storable, name)
 		except StorageWebError as error:
 			return self.storageError(request, error, dict(type=info.getName(), id=sid))
-		return request.returns(
-			self.relationPage(storable, info, relation, name, request, start=start, end=end)
+		return self.respondFormatted(
+			request,
+			self.toPublicValue(
+				self.relationPage(storable, info, relation, name, request, start=start, end=end),
+				request,
+			),
+			format=format,
 		)
 
 	async def onStorableRelationOperation(
@@ -1480,7 +1832,7 @@ class StorageServer(Service):
 		if self.readonly:
 			return request.notAuthorized()
 		sid = unquote(sid)
-		storable = storableClass.Get(sid)
+		storable = self.scopedGet(request, storableClass, sid)
 		if not storable:
 			return request.notFound()
 		try:
@@ -1511,9 +1863,14 @@ class StorageServer(Service):
 		if request.param("return") == "none":
 			return request.returns(dict(ok=True, operation=operation))
 		if request.param("return") == "object":
-			return request.returns(storable.export(**info.getExportOptions()))
+			return request.returns(
+				self.toPublicValue(storable.export(**info.getExportOptions()), request)
+			)
 		return request.returns(
-			self.relationPage(storable, info, relation, name, request, operation=operation)
+			self.toPublicValue(
+				self.relationPage(storable, info, relation, name, request, operation=operation),
+				request,
+			)
 		)
 
 	def getStorableRelation(self, storable, name):
@@ -1760,17 +2117,41 @@ class StorageServer(Service):
 	def _iterKVHandlers(self, name):
 		base = "kv/%s" % name
 
-		def handler_describe(request: HTTPRequest, _name: str = name) -> HTTPResponse:
-			return self.onKVDescribe(request, _name)
+		def handler_describe(request: HTTPRequest, _name: str = name, _format=None) -> HTTPResponse:
+			return self.onKVDescribe(request, _name, format=_format)
 
-		def handler_size(request: HTTPRequest, _name: str = name) -> HTTPResponse:
-			return self.onKVSize(request, _name)
+		def handler_describe_md(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVDescribe(request, _name, format="md")
 
-		def handler_has(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
-			return self.onKVHas(request, _name, key)
+		def handler_describe_xml(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVDescribe(request, _name, format="xml")
 
-		def handler_get(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
-			return self.onKVGet(request, _name, key)
+		def handler_size(request: HTTPRequest, _name: str = name, _format=None) -> HTTPResponse:
+			return self.onKVSize(request, _name, format=_format)
+
+		def handler_size_md(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVSize(request, _name, format="md")
+
+		def handler_size_xml(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVSize(request, _name, format="xml")
+
+		def handler_has(request: HTTPRequest, key: str, _name: str = name, _format=None) -> HTTPResponse:
+			return self.onKVHas(request, _name, key, format=_format)
+
+		def handler_has_md(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return self.onKVHas(request, _name, key, format="md")
+
+		def handler_has_xml(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return self.onKVHas(request, _name, key, format="xml")
+
+		def handler_get(request: HTTPRequest, key: str, _name: str = name, _format=None) -> HTTPResponse:
+			return self.onKVGet(request, _name, key, format=_format)
+
+		def handler_get_md(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return self.onKVGet(request, _name, key, format="md")
+
+		def handler_get_xml(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
+			return self.onKVGet(request, _name, key, format="xml")
 
 		async def handler_set(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
 			return await self.onKVSet(request, _name, key)
@@ -1778,11 +2159,23 @@ class StorageServer(Service):
 		def handler_delete(request: HTTPRequest, key: str, _name: str = name) -> HTTPResponse:
 			return self.onKVDelete(request, _name, key)
 
-		def handler_list(request: HTTPRequest, _name: str = name) -> HTTPResponse:
-			return self.onKVList(request, _name)
+		def handler_list(request: HTTPRequest, _name: str = name, _format=None) -> HTTPResponse:
+			return self.onKVList(request, _name, format=_format)
 
-		def handler_items(request: HTTPRequest, _name: str = name) -> HTTPResponse:
-			return self.onKVItems(request, _name)
+		def handler_list_md(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVList(request, _name, format="md")
+
+		def handler_list_xml(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVList(request, _name, format="xml")
+
+		def handler_items(request: HTTPRequest, _name: str = name, _format=None) -> HTTPResponse:
+			return self.onKVItems(request, _name, format=_format)
+
+		def handler_items_md(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVItems(request, _name, format="md")
+
+		def handler_items_xml(request: HTTPRequest, _name: str = name) -> HTTPResponse:
+			return self.onKVItems(request, _name, format="xml")
 
 		def handler_clear(request: HTTPRequest, _name: str = name) -> HTTPResponse:
 			return self.onKVClear(request, _name)
@@ -1791,13 +2184,25 @@ class StorageServer(Service):
 			return await self.onKVCommands(request, _name)
 
 		yield self._handler(handler_describe, ("GET", base))
+		yield self._handler(handler_describe_md, ("GET", base + ".md"))
+		yield self._handler(handler_describe_xml, ("GET", base + ".xml"))
 		yield self._handler(handler_size, ("GET", base + "/size"))
+		yield self._handler(handler_size_md, ("GET", base + "/size.md"))
+		yield self._handler(handler_size_xml, ("GET", base + "/size.xml"))
+		yield self._handler(handler_has_md, ("GET", base + "/has/{key:segment}.md"))
+		yield self._handler(handler_has_xml, ("GET", base + "/has/{key:segment}.xml"))
 		yield self._handler(handler_has, ("GET", base + "/has/{key:segment}"))
+		yield self._handler(handler_get_md, ("GET", base + "/get/{key:segment}.md"))
+		yield self._handler(handler_get_xml, ("GET", base + "/get/{key:segment}.xml"))
 		yield self._handler(handler_get, ("GET", base + "/get/{key:segment}"))
 		yield self._handler(handler_set, ("POST", base + "/set/{key:segment}"))
 		yield self._handler(handler_delete, ("POST", base + "/delete/{key:segment}"))
 		yield self._handler(handler_list, ("GET", base + "/list"))
+		yield self._handler(handler_list_md, ("GET", base + "/list.md"))
+		yield self._handler(handler_list_xml, ("GET", base + "/list.xml"))
 		yield self._handler(handler_items, ("GET", base + "/items"))
+		yield self._handler(handler_items_md, ("GET", base + "/items.md"))
+		yield self._handler(handler_items_xml, ("GET", base + "/items.xml"))
 		yield self._handler(handler_clear, ("POST", base + "/clear"))
 		yield self._handler(handler_commands, ("POST", base + "/commands"))
 
@@ -1812,22 +2217,64 @@ class StorageServer(Service):
 		async def handler_update(request: HTTPRequest, sid: str) -> HTTPResponse:
 			return await self.onStorableUpdate(storableClass, info, request, sid)
 
-		def handler_get(request: HTTPRequest, sid: str) -> HTTPResponse:
-			return self.onStorableGet(storableClass, info, request, sid)
+		def handler_get(request: HTTPRequest, sid: str, _format=None) -> HTTPResponse:
+			return self.onStorableGet(storableClass, info, request, sid, format=_format)
+
+		def handler_get_md(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return self.onStorableGet(storableClass, info, request, sid, format="md")
+
+		def handler_get_xml(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return self.onStorableGet(storableClass, info, request, sid, format="xml")
 
 		def handler_remove(request: HTTPRequest, sid: str) -> HTTPResponse:
 			return self.onStorableRemove(storableClass, info, request, sid)
 
 		def handler_list(
+			request: HTTPRequest, start: int = 0, end: int | None = None, _format=None
+		) -> HTTPResponse:
+			return self.onStorableList(
+				storableClass, info, request, start, end, format=_format
+			)
+
+		def handler_list_md(
 			request: HTTPRequest, start: int = 0, end: int | None = None
 		) -> HTTPResponse:
-			return self.onStorableList(storableClass, info, request, start, end)
+			return self.onStorableList(storableClass, info, request, start, end, format="md")
 
-		def handler_relations(request: HTTPRequest, sid: str) -> HTTPResponse:
-			return self.onStorableRelations(storableClass, info, request, sid)
+		def handler_list_xml(
+			request: HTTPRequest, start: int = 0, end: int | None = None
+		) -> HTTPResponse:
+			return self.onStorableList(storableClass, info, request, start, end, format="xml")
 
-		def handler_relation_count(request: HTTPRequest, sid: str, name: str) -> HTTPResponse:
-			return self.onStorableRelationCount(storableClass, info, request, sid, name)
+		def handler_relations(request: HTTPRequest, sid: str, _format=None) -> HTTPResponse:
+			return self.onStorableRelations(storableClass, info, request, sid, format=_format)
+
+		def handler_relations_md(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return self.onStorableRelations(storableClass, info, request, sid, format="md")
+
+		def handler_relations_xml(request: HTTPRequest, sid: str) -> HTTPResponse:
+			return self.onStorableRelations(storableClass, info, request, sid, format="xml")
+
+		def handler_relation_count(
+			request: HTTPRequest, sid: str, name: str, _format=None
+		) -> HTTPResponse:
+			return self.onStorableRelationCount(
+				storableClass, info, request, sid, name, format=_format
+			)
+
+		def handler_relation_count_md(
+			request: HTTPRequest, sid: str, name: str
+		) -> HTTPResponse:
+			return self.onStorableRelationCount(
+				storableClass, info, request, sid, name, format="md"
+			)
+
+		def handler_relation_count_xml(
+			request: HTTPRequest, sid: str, name: str
+		) -> HTTPResponse:
+			return self.onStorableRelationCount(
+				storableClass, info, request, sid, name, format="xml"
+			)
 
 		def handler_relation_get(
 			request: HTTPRequest,
@@ -1835,9 +2282,32 @@ class StorageServer(Service):
 			name: str,
 			start: int = 0,
 			end: int | None = None,
+			_format=None,
 		) -> HTTPResponse:
 			return self.onStorableRelationGet(
-				storableClass, info, request, sid, name, start, end
+				storableClass, info, request, sid, name, start, end, format=_format
+			)
+
+		def handler_relation_get_md(
+			request: HTTPRequest,
+			sid: str,
+			name: str,
+			start: int = 0,
+			end: int | None = None,
+		) -> HTTPResponse:
+			return self.onStorableRelationGet(
+				storableClass, info, request, sid, name, start, end, format="md"
+			)
+
+		def handler_relation_get_xml(
+			request: HTTPRequest,
+			sid: str,
+			name: str,
+			start: int = 0,
+			end: int | None = None,
+		) -> HTTPResponse:
+			return self.onStorableRelationGet(
+				storableClass, info, request, sid, name, start, end, format="xml"
 			)
 
 		async def handler_relation_operation(
@@ -1850,18 +2320,42 @@ class StorageServer(Service):
 		yield self._handler(handler_create, ("GET", url), ("POST", url))
 		yield self._handler(handler_update, ("POST", url + "/{sid:segment}"))
 		yield self._handler(handler_remove, ("POST", url + "/{sid:segment}/remove"))
+		yield self._handler(handler_get_md, ("GET", url + "/{sid:segment}.md"))
+		yield self._handler(handler_get_xml, ("GET", url + "/{sid:segment}.xml"))
 		yield self._handler(handler_get, ("GET", url + "/{sid:segment}"))
 		yield self._handler(handler_list, ("GET", url + "/list"))
+		yield self._handler(handler_list_md, ("GET", url + "/list.md"))
+		yield self._handler(handler_list_xml, ("GET", url + "/list.xml"))
 		yield self._handler(handler_list, ("GET", url + "/list/{start:int}"))
+		yield self._handler(handler_list_md, ("GET", url + "/list/{start:int}.md"))
+		yield self._handler(handler_list_xml, ("GET", url + "/list/{start:int}.xml"))
 		yield self._handler(handler_list, ("GET", url + "/list/{start:int}:"))
+		yield self._handler(handler_list_md, ("GET", url + "/list/{start:int}:.md"))
+		yield self._handler(handler_list_xml, ("GET", url + "/list/{start:int}:.xml"))
 		yield self._handler(handler_list, ("GET", url + "/list/{start:int}:{end:int}"))
+		yield self._handler(handler_list_md, ("GET", url + "/list/{start:int}:{end:int}.md"))
+		yield self._handler(handler_list_xml, ("GET", url + "/list/{start:int}:{end:int}.xml"))
 		yield self._handler(handler_relations, ("GET", url + "/{sid:segment}/relations"))
+		yield self._handler(handler_relations_md, ("GET", url + "/{sid:segment}/relations.md"))
+		yield self._handler(handler_relations_xml, ("GET", url + "/{sid:segment}/relations.xml"))
+		yield self._handler(handler_relation_get_md, ("GET", url + "/{sid:segment}/relations/{name:segment}.md"))
+		yield self._handler(handler_relation_get_xml, ("GET", url + "/{sid:segment}/relations/{name:segment}.xml"))
 		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}"))
+		yield self._handler(handler_relation_count_md, ("GET", url + "/{sid:segment}/relations/{name:segment}/count.md"))
+		yield self._handler(handler_relation_count_xml, ("GET", url + "/{sid:segment}/relations/{name:segment}/count.xml"))
 		yield self._handler(handler_relation_count, ("GET", url + "/{sid:segment}/relations/{name:segment}/count"))
+		yield self._handler(handler_relation_get_md, ("GET", url + "/{sid:segment}/relations/{name:segment}/list.md"))
+		yield self._handler(handler_relation_get_xml, ("GET", url + "/{sid:segment}/relations/{name:segment}/list.xml"))
 		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list"))
 		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}"))
+		yield self._handler(handler_relation_get_md, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}.md"))
+		yield self._handler(handler_relation_get_xml, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}.xml"))
 		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:"))
+		yield self._handler(handler_relation_get_md, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:.md"))
+		yield self._handler(handler_relation_get_xml, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:.xml"))
 		yield self._handler(handler_relation_get, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:{end:int}"))
+		yield self._handler(handler_relation_get_md, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:{end:int}.md"))
+		yield self._handler(handler_relation_get_xml, ("GET", url + "/{sid:segment}/relations/{name:segment}/list/{start:int}:{end:int}.xml"))
 		yield self._handler(handler_relation_operation, ("POST", url + "/{sid:segment}/relations/{name:segment}/{operation:segment}"))
 
 		for name, meta in info.listInvocables():
@@ -1869,6 +2363,24 @@ class StorageServer(Service):
 			invoke_url = invoke_url[1:] if invoke_url.startswith("/") else invoke_url
 
 			async def handler_invoke(
+				request: HTTPRequest,
+				sid: str,
+				_handlerName: str = name,
+				_contentType=contentType,
+				_format=None,
+				**kwargs,
+			) -> HTTPResponse:
+				return await self.onStorableInvokeMethod(
+					storableClass,
+					_handlerName,
+					_contentType,
+					request,
+					sid,
+					format=_format,
+					**kwargs,
+				)
+
+			async def handler_invoke_md(
 				request: HTTPRequest,
 				sid: str,
 				_handlerName: str = name,
@@ -1881,13 +2393,37 @@ class StorageServer(Service):
 					_contentType,
 					request,
 					sid,
+					format="md",
+					**kwargs,
+				)
+
+			async def handler_invoke_xml(
+				request: HTTPRequest,
+				sid: str,
+				_handlerName: str = name,
+				_contentType=contentType,
+				**kwargs,
+			) -> HTTPResponse:
+				return await self.onStorableInvokeMethod(
+					storableClass,
+					_handlerName,
+					_contentType,
+					request,
+					sid,
+					format="xml",
 					**kwargs,
 				)
 
 			urls = []
 			methods = (methods,) if isinstance(methods, str) else methods
 			for method in methods or ("GET", "POST"):
-				urls.append((method.upper(), url + "/{sid:segment}/" + invoke_url))
+				method = method.upper()
+				urls.append((method, url + "/{sid:segment}/" + invoke_url))
+			if methods is None:
+				methods = ("GET", "POST")
+			if any(_.upper() == "GET" for _ in methods or ()) and not contentType:
+				yield self._handler(handler_invoke_md, ("GET", url + "/{sid:segment}/" + invoke_url + ".md"))
+				yield self._handler(handler_invoke_xml, ("GET", url + "/{sid:segment}/" + invoke_url + ".xml"))
 			yield self._handler(handler_invoke, *urls)
 
 		if issubclass(storableClass, StoredRaw):

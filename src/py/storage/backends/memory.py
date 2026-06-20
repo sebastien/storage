@@ -10,6 +10,7 @@ class MemoryBackend(StorageBackend):
 	def __init__(self):
 		super().__init__()
 		self.values = {}
+		self.metadata = {}
 
 	def add(self, key, data):
 		key = self._serialize(key)
@@ -53,6 +54,21 @@ class MemoryBackend(StorageBackend):
 
 	def clear(self):
 		self.values = {}
+		self.metadata = {}
+
+	def getMetadata(self, key=None, default=None):
+		if key is None:
+			return dict(self.metadata)
+		return self.metadata.get(key, default)
+
+	def setMetadata(self, key, value):
+		self.metadata[key] = value
+		return value
+
+	def removeMetadata(self, key):
+		if key in self.metadata:
+			del self.metadata[key]
+		return self
 
 	def export(self, **options):
 		return self.values
@@ -64,6 +80,7 @@ class KVMemoryBackend(StorageBackend):
 	def __init__(self):
 		super().__init__()
 		self._data: Dict[str, bytes] = {}
+		self._metadata: Dict[str, bytes] = {}
 
 	def set(self, key: str, data: bytes):
 		self._data[key] = data
@@ -112,6 +129,20 @@ class KVMemoryBackend(StorageBackend):
 
 	def clear(self):
 		self._data.clear()
+		self._metadata.clear()
+
+	def getMetadata(self, key=None, default=None):
+		if key is None:
+			return dict(self._metadata)
+		return self._metadata.get(key, default)
+
+	def setMetadata(self, key, value):
+		self._metadata[key] = value
+		return value
+
+	def removeMetadata(self, key):
+		self._metadata.pop(key, None)
+		return self
 
 
 __all__ = [

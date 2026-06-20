@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `storage.web` module exposes storable classes (`StoredObject` and `StoredRaw`) over HTTP as a REST-like JSON API. It integrates with the `extra` microservice framework to automatically handle requests, load data payloads, handle pagination, invoke custom domain methods, manage relations, and stream binary file data.
+The `storage.web` module exposes storable classes (`StoredObject` and `StoredRaw`) over HTTP as a REST-like API. It integrates with the `extra` microservice framework to automatically handle requests, load data payloads, handle pagination, invoke custom domain methods, manage relations, and stream binary file data.
 
 ## Decorators
 
@@ -64,6 +64,8 @@ class WebItem(StoredObject):
 ## The `StorageServer` Service
 
 The `StorageServer` acts as an `extra.Service` router that publishes endpoints for registered storable classes.
+
+Read endpoints can be served as JSON, Markdown, or XML. JSON remains the default representation; `.md` and `.xml` suffixes expose the same read payloads as `text/markdown` and `application/xml` respectively.
 
 ### Initialization
 
@@ -222,13 +224,27 @@ When a storable class `WebItem` is decorated with `@http("items")` and registere
 | `GET`/`POST` | `/api/items` | [Create Object](#1-create-object) |
 | `POST` | `/api/items/{id}` | [Update Object](#2-update-object) |
 | `GET` | `/api/items/{id}` | [Retrieve Object](#3-retrieve-object) |
+| `GET` | `/api/items/{id}.md` | [Retrieve Object as Markdown](#3-retrieve-object) |
+| `GET` | `/api/items/{id}.xml` | [Retrieve Object as XML](#3-retrieve-object) |
 | `POST` | `/api/items/{id}/remove` | [Delete Object](#4-delete-object) |
 | `GET` | `/api/items/list` | [List/Paginate Objects](#5-list--pagination) |
+| `GET` | `/api/items/list.md` | [List/Paginate Objects as Markdown](#5-list--pagination) |
+| `GET` | `/api/items/list.xml` | [List/Paginate Objects as XML](#5-list--pagination) |
 | `GET`/`POST` | `/api/items/{id}/{custom_method}` | [Invoke Custom Method](#6-custom-method-invocation) |
+| `GET` | `/api/items/{id}/{custom_method}.md` | [Invoke Custom Method as Markdown](#6-custom-method-invocation) *(GET only, when no custom `contentType` is set)* |
+| `GET` | `/api/items/{id}/{custom_method}.xml` | [Invoke Custom Method as XML](#6-custom-method-invocation) *(GET only, when no custom `contentType` is set)* |
 | `GET` | `/api/items/{id}/relations` | [List Relations](#8-relation-listing) |
+| `GET` | `/api/items/{id}/relations.md` | [List Relations as Markdown](#8-relation-listing) |
+| `GET` | `/api/items/{id}/relations.xml` | [List Relations as XML](#8-relation-listing) |
 | `GET` | `/api/items/{id}/relations/{name}/count` | [Relation Count](#9-relation-count) |
+| `GET` | `/api/items/{id}/relations/{name}/count.md` | [Relation Count as Markdown](#9-relation-count) |
+| `GET` | `/api/items/{id}/relations/{name}/count.xml` | [Relation Count as XML](#9-relation-count) |
 | `GET` | `/api/items/{id}/relations/{name}/list` | [Relation List/Pagination](#10-relation-pagination-and-listing) |
+| `GET` | `/api/items/{id}/relations/{name}/list.md` | [Relation List/Pagination as Markdown](#10-relation-pagination-and-listing) |
+| `GET` | `/api/items/{id}/relations/{name}/list.xml` | [Relation List/Pagination as XML](#10-relation-pagination-and-listing) |
 | `GET` | `/api/items/{id}/relations/{name}/list/{start}:{end}` | [Relation List/Pagination](#10-relation-pagination-and-listing) |
+| `GET` | `/api/items/{id}/relations/{name}/list/{start}:{end}.md` | [Relation List/Pagination as Markdown](#10-relation-pagination-and-listing) |
+| `GET` | `/api/items/{id}/relations/{name}/list/{start}:{end}.xml` | [Relation List/Pagination as XML](#10-relation-pagination-and-listing) |
 | `POST` | `/api/items/{id}/relations/{name}/{operation}` | [Relation Mutation](#11-relation-mutation) |
 | `GET` | `/api/blobs/{id}/data` | [Retrieve Raw File Data](#7-raw-file-data-retrieval) *(StoredRaw only)* |
 
@@ -249,9 +265,11 @@ When a storable class `WebItem` is decorated with `@http("items")` and registere
 
 #### 3. Retrieve Object
 *   **Endpoints:** `GET /api/items/{id}`
+    *   Markdown: `GET /api/items/{id}.md`
+    *   XML: `GET /api/items/{id}.xml`
 *   **Query Parameters:**
     *   `strict`: If `strict=1` or `strict` is present, returns `404 Not Found` if the object does not exist. Otherwise, a temporary empty instance with ID `{id}` is returned.
-*   **Returns:** JSON representation of the object.
+*   **Returns:** JSON by default; Markdown and XML suffixes return the same payload rendered as `text/markdown` or `application/xml`.
 
 #### 4. Delete Object
 *   **Endpoints:** `POST /api/items/{id}/remove`
@@ -262,13 +280,19 @@ When a storable class `WebItem` is decorated with `@http("items")` and registere
 Allows querying lists of objects.
 *   **Endpoints:**
     *   `GET /api/items/list` (Uses default count of `20`)
+    *   `GET /api/items/list.md`
+    *   `GET /api/items/list.xml`
     *   `GET /api/items/list/{start}`
     *   `GET /api/items/list/{start}:`
     *   `GET /api/items/list/{start}:{end}`
-*   **Returns:** A JSON envelope:
+    *   `GET /api/items/list/{start}.md`
+    *   `GET /api/items/list/{start}.xml`
+    *   `GET /api/items/list/{start}:{end}.md`
+    *   `GET /api/items/list/{start}:{end}.xml`
+*   **Returns:** JSON by default; Markdown and XML suffixes render the same envelope.
     ```json
     {
-    	"start": 0,
+	    "start": 0,
     	"end": 20,
     	"count": 1,
     	"values": [...]
@@ -278,11 +302,13 @@ Allows querying lists of objects.
 #### 6. Custom Method Invocation
 Dynamically invokes custom instance methods decorated with `@http`.
 *   **Endpoints:** `GET /api/items/{id}/{method_name}`, `POST /api/items/{id}/{method_name}`
+    *   Markdown: `GET /api/items/{id}/{method_name}.md`
+    *   XML: `GET /api/items/{id}/{method_name}.xml`
 *   **Parameters Mapping:**
     *   For **`POST`** requests, if the payload is a list, it is passed as positional `*args`. If it is a dictionary, it is combined with query parameters and passed as `**kwargs`.
     *   For **`GET`** requests, URL query parameters are passed as `**kwargs`.
 *   **Type Restoration:** Parameter values are automatically passed to `restore()` to map primitives back to database-managed objects or storage structures.
-*   **Returns:** The method's return value serialized as JSON (unless a custom `contentType` is configured).
+*   **Returns:** The method's return value serialized as JSON by default, or rendered as Markdown/XML for GET requests without a custom `contentType`.
 
 #### 7. Raw File Data Retrieval
 Only available on subclasses of `StoredRaw`.
@@ -292,17 +318,23 @@ Only available on subclasses of `StoredRaw`.
 
 #### 8. Relation Listing
 *   **Endpoints:** `GET /api/items/{id}/relations`
+    *   Markdown: `GET /api/items/{id}/relations.md`
+    *   XML: `GET /api/items/{id}/relations.xml`
 *   **Behavior:** Returns the relation map for the object.
 
 #### 9. Relation Count
 *   **Endpoints:** `GET /api/items/{id}/relations/{name}/count`
+    *   Markdown: `GET /api/items/{id}/relations/{name}/count.md`
+    *   XML: `GET /api/items/{id}/relations/{name}/count.xml`
 *   **Behavior:** Returns the number of values in a relation.
 
 #### 10. Relation Pagination and Listing
 *   **Endpoints:** `GET /api/items/{id}/relations/{name}/list`, `GET /api/items/{id}/relations/{name}/list/{start}:{end}`
+    *   Markdown: `.md` suffix on each GET variant
+    *   XML: `.xml` suffix on each GET variant
 *   **Query Parameters:**
     *   `resolve`, `depth`, `start`, `end`, `count`, `return`
-*   **Behavior:** Returns relation counts or paginated relation values.
+*   **Behavior:** Returns relation counts or paginated relation values, formatted as JSON by default or Markdown/XML with suffixed GET routes.
 
 #### 11. Relation Mutation
 *   **Endpoints:** `POST /api/items/{id}/relations/{name}/{operation}`
@@ -332,7 +364,7 @@ await app.start()
 
 ## JavaScript Bridge (`src/js/storage/object.js`)
 
-The JavaScript bridge mirrors the web API for browser and client-side usage. It exports `bridge()`, `StoredObjectBridge`, `StoredObject`, `StoredRelation`, `StoredType`, and `StorageBridgeError`.
+The JavaScript bridge mirrors the web API for browser and client-side usage. It exports `bridge()`, `StoredObjectBridge`, `StoredObject`, `StoredRelation`, `StoredQuery`, `StoredType`, and `StorageBridgeError`.
 
 ### Bridge Entry Point
 
@@ -367,12 +399,33 @@ Key methods:
 * `delete(indexOrRange, options)`, `remove(values, options)`
 * `swap(a, b, options)`, `move(fromOrRange, to, options)`, `clear(options)`
 
+### StoredQuery
+
+`StoredQuery` wraps owner-scoped live query subscriptions.
+
+Key methods:
+* `values()`
+* `sub(callback)`, `unsub(callback)`
+* `sync(options)` to subscribe live and wait for the initial snapshot
+
+Create queries through either the bridge or a stored type:
+
+```js
+const members = storage.query("members", { owner: "user-123" })
+// or
+const sameMembers = storage.type("members").query({ owner: "user-123" })
+
+await members.sync()
+console.log(members.values())
+```
+
 ### StoredObjectBridge
 
 `StoredObjectBridge` provides the transport layer and object cache.
 
 Relevant methods:
 * `type(name)`, `ref(type, id, data)`, `object(type, id, data)`
+* `query(type, options)`
 * `get(type, id, options)`, `create(type, fields)`
 * `page(type, options)`, `list(type, options)`, `ilist(type, options)`
 * `relations(type, id)`
@@ -381,4 +434,4 @@ Relevant methods:
 * `relationList(type, id, name, options)`
 * `relationOperation(type, id, name, operation, body, options)`
 
-The bridge also supports batched updates and live subscriptions for objects and relations.
+The bridge also supports batched updates and live subscriptions for objects, relations, and owner-scoped queries.

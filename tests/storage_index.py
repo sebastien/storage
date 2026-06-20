@@ -9,6 +9,7 @@
 # -----------------------------------------------------------------------------
 
 import unittest, os, shutil, sys, json, random
+import glob
 from storage import DirectoryBackend, DBMBackend, MemoryBackend, Types
 from storage.objects import StoredObject, ObjectStorage
 from storage.index import Index, IndexStorage
@@ -35,6 +36,12 @@ def noneIfEmpty(v):
 			return noneIfEmpty(tuple(v))
 	else:
 		return None
+
+
+def _removeDBMFiles(path):
+	for candidate in glob.glob(path + "*"):
+		if os.path.isfile(candidate):
+			os.unlink(candidate)
 
 
 class Value(StoredObject):
@@ -238,9 +245,8 @@ class DBMStorageTest(unittest.TestCase):
 
 	def clean(self):
 		for f in ("index-fwd.dbm", "index-bwd.dbm"):
-			if os.path.exists(f):
-				os.unlink(f)
-			assert not os.path.exists(f)
+			_removeDBMFiles(f)
+			assert not glob.glob(f + "*")
 
 
 #

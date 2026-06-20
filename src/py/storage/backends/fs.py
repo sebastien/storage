@@ -5,6 +5,7 @@ from typing import Iterator
 import os
 import shutil
 import base64
+import json
 
 # -----------------------------------------------------------------------------
 #
@@ -99,6 +100,10 @@ class DirectoryBackend(StorageBackend):
 	def clear(self):
 		for key in list(self.keys()):
 			self.remove(key)
+		metadata_path = self._metadataPath()
+		if os.path.exists(metadata_path):
+			os.unlink(metadata_path)
+		self._cleanupEmptyParents(metadata_path)
 
 	def list(self, key=None):
 		assert key is None, "Not implemented"
@@ -186,6 +191,25 @@ class DirectoryBackend(StorageBackend):
 		"""Lists the metrics available in this backend"""
 		return []
 
+	def getMetadata(self, key=None, default=None):
+		metadata = self._readMetadata()
+		if key is None:
+			return metadata
+		return metadata.get(key, default)
+
+	def setMetadata(self, key, value):
+		metadata = self._readMetadata()
+		metadata[key] = value
+		self._writeMetadata(metadata)
+		return value
+
+	def removeMetadata(self, key):
+		metadata = self._readMetadata()
+		if key in metadata:
+			del metadata[key]
+			self._writeMetadata(metadata)
+		return self
+
 	def _serialize(self, key=NOTHING, data=NOTHING):
 		"""Serializing the key means converting the key to a path."""
 		if key is NOTHING:
@@ -265,6 +289,24 @@ class DirectoryBackend(StorageBackend):
 		"""Returns the value that is stored in the given backend at the given
 		key."""
 		return self.readFile(path)
+
+	def _metadataPath(self):
+		return os.path.join(self.root, ".storage", "metadata.json")
+
+	def _readMetadata(self):
+		path = self._metadataPath()
+		if not os.path.exists(path):
+			return {}
+		with open(path, "rt") as f:
+			return json.load(f)
+
+	def _writeMetadata(self, metadata):
+		path = self._metadataPath()
+		parent = os.path.dirname(path)
+		if parent and not os.path.exists(parent):
+			os.makedirs(parent)
+		with open(path, "wt") as f:
+			json.dump(metadata, f)
 
 	def _getWriteFileHandle(self, path, mode="ab"):
 		parent = os.path.dirname(path)
@@ -370,6 +412,51 @@ class KVFileBackend(StorageBackend):
 		for name in os.listdir(self.root):
 			if name.endswith(self.ext):
 				os.remove(os.path.join(self.root, name))
+		metadata_path = self._metadataPath()
+		if os.path.exists(metadata_path):
+			os.unlink(metadata_path)
+
+	def getMetadata(self, key=None, default=None):
+		metadata = self._readMetadata()
+		if key is None:
+			return metadata
+		return metadata.get(key, default)
+
+	def setMetadata(self, key, value):
+		metadata = self._readMetadata()
+		metadata[key] = value
+		self._writeMetadata(metadata)
+		return value
+
+	def removeMetadata(self, key):
+		metadata = self._readMetadata()
+		if key is None:
+			metadata = {}
+		elif key in metadata:
+			del metadata[key]
+		else:
+			return self
+		if metadata:
+			self._writeMetadata(metadata)
+		else:
+			path = self._metadataPath()
+			if os.path.exists(path):
+				os.unlink(path)
+		return self
+
+	def _metadataPath(self) -> str:
+		return os.path.join(self.root, ".metadata.json")
+
+	def _readMetadata(self):
+		path = self._metadataPath()
+		if not os.path.exists(path):
+			return {}
+		with open(path, "rt") as f:
+			return json.load(f)
+
+	def _writeMetadata(self, metadata):
+		with open(self._metadataPath(), "wt") as f:
+			json.dump(metadata, f)
 
 
 __all__ = [

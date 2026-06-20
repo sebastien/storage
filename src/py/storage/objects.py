@@ -277,6 +277,11 @@ class StoredObject(Storable):
 		return cls._ensureStorage().ownedBy(owner, cls)
 
 	@classmethod
+	def OwnerPrefix(cls, owner: Any) -> str:
+		"""Returns the storage key prefix for objects owned by the given owner."""
+		return "%s.%s." % (cls.StoragePrefix(), cls.OwnerBucket(owner))
+
+	@classmethod
 	def Has(cls, id: Any, owner: Optional[Any] = NOTHING) -> bool:
 		"""Tells if there is an object stored with the given object id."""
 		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
@@ -1123,8 +1128,15 @@ class ObjectStorage:
 	too many objects in memory when memory becomes scarce.
 	"""
 
-	def __init__(self, backend: StorageBackend):
+	def __init__(
+		self,
+		backend: StorageBackend,
+		validateSchema: bool = True,
+		migrateSchema: bool = True,
+	):
 		self.backend = backend
+		self.validateSchemaOnUse = validateSchema
+		self.migrateSchemaOnUse = migrateSchema
 		self.lock = threading.RLock()
 		# FIXME: This is wrong, we should make sure the object is persisted
 		# when it is removed from cache!
@@ -1284,7 +1296,8 @@ class ObjectStorage:
 			else:
 				p = prefix
 		for key in self.backend.keys(p):
-			yield key
+			if self._matchesPrefix(key, p):
+				yield key
 
 	# FIXME: Should be updated according to raw storage
 	def list(self, storedObjectClasses=None, count=-1, start=0, end=None):
@@ -1342,6 +1355,15 @@ class ObjectStorage:
 				self.backend.update(key, storedObject.export())
 		self.backend.sync()
 
+	def validateSchema(self, applyMigrations: Optional[bool] = None):
+		from .schema import SchemaValidator
+
+		validator = SchemaValidator(
+			self,
+			migrate=self.migrateSchemaOnUse if applyMigrations is None else applyMigrations,
+		)
+		return validator.validate()
+
 	def use(self, *classes):
 		"""Makes this storage register itself with the given classes."""
 		for c in classes:
@@ -1350,6 +1372,8 @@ class ObjectStorage:
 			if name not in self._declaredClasses:
 				self._declaredClasses[name] = c
 				Storable.DeclareClass(c)
+		if self.validateSchemaOnUse:
+			self.validateSchema()
 		return self
 
 	def release(self):
@@ -1370,8 +1394,11 @@ class ObjectStorage:
 	def ownedBy(self, owner: StoredObject, storedObjectClasses=None):
 		classes = self._ownedClasses(storedObjectClasses)
 		for ownedClass in classes:
-			for item in ownedClass.All():
-				if item and item.getOwner() and isSame(item.getOwner(), owner):
+			# TODO: Fall back to a dedicated owner index if key layout ever stops
+			# encoding ownership as `<collection>.<owner>.<local>`.
+			for key in self.keys(ownedClass, prefix=ownedClass.OwnerBucket(owner) + "."):
+				item = self.get(key)
+				if item:
 					yield item
 
 	def _ownedClasses(self, storedObjectClasses=None):
@@ -1399,6 +1426,13 @@ class ObjectStorage:
 				continue
 			for item in list(self.ownedBy(owner, ownedClass)):
 				self.remove(item)
+
+	def _matchesPrefix(self, key, prefix) -> bool:
+		if prefix is None:
+			return True
+		if isinstance(prefix, (tuple, list)):
+			return any(self._matchesPrefix(key, _) for _ in prefix)
+		return str(key).startswith(str(prefix))
 
 	def export(self):
 		"""Exports all the objects in this storage. You should only use that

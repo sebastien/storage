@@ -53,6 +53,13 @@ class SQLiteBackend(StorageBackend):
 				"updated INTEGER NOT NULL DEFAULT (unixepoch())"
 				")"
 			)
+			self.connection.execute(
+				"CREATE TABLE IF NOT EXISTS metadata ("
+				"key TEXT PRIMARY KEY, "
+				"data TEXT NOT NULL, "
+				"updated INTEGER NOT NULL DEFAULT (unixepoch())"
+				")"
+			)
 			self.connection.commit()
 			return True
 
@@ -121,6 +128,7 @@ class SQLiteBackend(StorageBackend):
 		with self.lock:
 			self._connection().execute("DELETE FROM kv")
 			self._connection().execute("DELETE FROM raw")
+			self._connection().execute("DELETE FROM metadata")
 			self._commit()
 		return self
 
@@ -182,6 +190,38 @@ class SQLiteBackend(StorageBackend):
 
 	def getRawDataPath(self, key, ext=None):
 		raise NotImplementedError("SQLiteBackend stores raw data in SQLite BLOBs")
+
+	def getMetadata(self, key=None, default=None):
+		with self.lock:
+			if key is None:
+				rows = list(self._connection().execute("SELECT key, data FROM metadata"))
+				return dict((row[0], self._deserialize(data=row[1])) for row in rows)
+			cursor = self._connection().execute(
+				"SELECT data FROM metadata WHERE key = ?",
+				(key,),
+			)
+			row = cursor.fetchone()
+		return default if row is None else self._deserialize(data=row[0])
+
+	def setMetadata(self, key, value):
+		data = self._serialize(data=value)
+		with self.lock:
+			self._connection().execute(
+				"INSERT INTO metadata(key, data, updated) VALUES (?, ?, unixepoch()) "
+				"ON CONFLICT(key) DO UPDATE SET data=excluded.data, updated=unixepoch()",
+				(key, data),
+			)
+			self._commit()
+		return value
+
+	def removeMetadata(self, key):
+		with self.lock:
+			if key is None:
+				self._connection().execute("DELETE FROM metadata")
+			else:
+				self._connection().execute("DELETE FROM metadata WHERE key = ?", (key,))
+			self._commit()
+		return self
 
 	def close(self) -> bool:
 		with self.lock:
@@ -249,6 +289,9 @@ class KVSqliteBackend(StorageBackend):
 			self._connection.execute(
 				"CREATE TABLE IF NOT EXISTS %s (key TEXT PRIMARY KEY, value BLOB)"
 				% self.table
+			)
+			self._connection.execute(
+				"CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)"
 			)
 			self._connection.commit()
 
@@ -325,7 +368,36 @@ class KVSqliteBackend(StorageBackend):
 	def clear(self):
 		with self._lock:
 			self._conn().execute("DELETE FROM %s" % self.table)
+			self._conn().execute("DELETE FROM metadata")
 			self._conn().commit()
+
+	def getMetadata(self, key=None, default=None):
+		with self._lock:
+			if key is None:
+				rows = list(self._conn().execute("SELECT key, value FROM metadata"))
+				return dict((row[0], self._deserialize(data=row[1])) for row in rows)
+			cur = self._conn().execute("SELECT value FROM metadata WHERE key = ?", (key,))
+			row = cur.fetchone()
+			return default if row is None else self._deserialize(data=row[0])
+
+	def setMetadata(self, key, value):
+		with self._lock:
+			self._conn().execute(
+				"INSERT INTO metadata(key, value) VALUES (?, ?) "
+				"ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+				(key, self._serialize(data=value)),
+			)
+			self._conn().commit()
+		return value
+
+	def removeMetadata(self, key):
+		with self._lock:
+			if key is None:
+				self._conn().execute("DELETE FROM metadata")
+			else:
+				self._conn().execute("DELETE FROM metadata WHERE key = ?", (key,))
+			self._conn().commit()
+		return self
 
 	def close(self):
 		with self._lock:

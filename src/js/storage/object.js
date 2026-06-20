@@ -633,6 +633,10 @@ class StoredType {
 		this.name = name
 	}
 
+	query(options = {}) {
+		return this.bridge.query(this.name, options)
+	}
+
 	ref(id, data) {
 		return this.bridge.ref(this.name, id, data)
 	}
@@ -662,6 +666,217 @@ class StoredType {
 	}
 }
 
+class StoredQuery {
+	constructor(bridge, type, options = {}) {
+		this.bridge = bridge
+		this.type = bridge.routeType(type)
+		this.owner = options.owner
+		this.state = {
+			values: [],
+			loaded: false,
+			cursor: undefined,
+			version: 0,
+			subscribers: new Set(),
+		}
+		this._syncPromise = undefined
+		this._resolveSync = undefined
+		this._rejectSync = undefined
+	}
+
+	target() {
+		return {
+			kind: "query",
+			type: this.type,
+			owner: this.owner,
+		}
+	}
+
+	queryKey() {
+		return this.bridge.queryKey(this.target())
+	}
+
+	sub(callback) {
+		if (typeof callback !== "function") {
+			throw new Error("StoredQuery.sub expects a callback")
+		}
+		this.state.subscribers.add(callback)
+		return () => this.unsub(callback)
+	}
+
+	unsub(callback) {
+		this.state.subscribers.delete(callback)
+		return this
+	}
+
+	values() {
+		return [...this.state.values]
+	}
+
+	snapshot() {
+		return {
+			values: [...this.state.values],
+			loaded: this.state.loaded,
+			cursor: this.state.cursor,
+			version: this.state.version,
+		}
+	}
+
+	async sync(options = {}) {
+		if (!this.bridge.live || !this.bridge.EventSource) {
+			throw new Error("StoredQuery.sync requires live EventSource support")
+		}
+		this.bridge.trackQuery(this)
+		if (this.state.loaded && !options.refresh) {
+			return this
+		}
+		const useSnapshot = options.snapshot !== false
+		if (useSnapshot) {
+			this.prepareSync()
+		}
+		try {
+			await this.bridge.subscribeQuery(this, {
+				snapshot: useSnapshot,
+			})
+			return useSnapshot ? await this._syncPromise : this
+		} catch (error) {
+			this.failSync(error)
+			throw error
+		}
+	}
+
+	prepareSync() {
+		if (this._syncPromise) {
+			return this._syncPromise
+		}
+		this._syncPromise = new Promise((resolve, reject) => {
+			this._resolveSync = resolve
+			this._rejectSync = reject
+		})
+		return this._syncPromise
+	}
+
+	resolveSync() {
+		if (this._resolveSync) {
+			this._resolveSync(this)
+		}
+		this._syncPromise = undefined
+		this._resolveSync = undefined
+		this._rejectSync = undefined
+		return this
+	}
+
+	failSync(error) {
+		if (this._rejectSync) {
+			this._rejectSync(error)
+		}
+		this._syncPromise = undefined
+		this._resolveSync = undefined
+		this._rejectSync = undefined
+		return this
+	}
+
+	applySnapshot(data) {
+		const before = this.snapshot()
+		this.state.values = (data.values || []).map((_) => this.bridge.hydrate(_, this.type))
+		this.state.cursor = data.cursor
+		this.state.loaded = true
+		this.state.version += 1
+		this.emitChange(before, {
+			kind: "snapshot",
+			cursor: this.state.cursor,
+			values: this.values(),
+			count: this.state.values.length,
+			data,
+		}, "remote")
+		this.resolveSync()
+		return this
+	}
+
+	applyDelta(data) {
+		if (!this.state.loaded) {
+			return this
+		}
+		const before = this.snapshot()
+		const key = this.objectKey(data)
+		const index = this.indexOfKey(key)
+		const object = this.deltaObject(data)
+		let nextIndex = index
+		if (data.change === "added") {
+			if (object) {
+				if (index === -1) {
+					this.state.values.push(object)
+					nextIndex = this.state.values.length - 1
+				} else {
+					this.state.values[index] = object
+				}
+			}
+		} else if (data.change === "updated") {
+			if (object) {
+				if (index === -1) {
+					this.state.values.push(object)
+					nextIndex = this.state.values.length - 1
+				} else {
+					this.state.values[index] = object
+				}
+			}
+		} else if (data.change === "removed") {
+			if (index !== -1) {
+				this.state.values.splice(index, 1)
+			}
+		}
+		if (data.seq !== undefined) {
+			this.state.cursor = data.seq
+		}
+		this.state.version += 1
+		this.emitChange(before, {
+			kind: data.change,
+			object,
+			index: nextIndex,
+			cursor: this.state.cursor,
+			data,
+		}, "remote")
+		return this
+	}
+
+	deltaObject(data) {
+		if (data.value && this.bridge.isObjectExport(data.value)) {
+			return this.bridge.hydrate(data.value, this.type)
+		}
+		if (data.type !== undefined && data.id !== undefined) {
+			return this.bridge.object(this.bridge.routeType(data.type), data.id)
+		}
+		return undefined
+	}
+
+	objectKey(data) {
+		if (data.type === undefined || data.id === undefined) {
+			return undefined
+		}
+		return this.bridge.cacheKey(this.bridge.routeType(data.type), data.id)
+	}
+
+	indexOfKey(key) {
+		if (key === undefined) {
+			return -1
+		}
+		for (let i = 0; i < this.state.values.length; i += 1) {
+			const value = this.state.values[i]
+			if (this.bridge.cacheKey(value.routeType, value.id) === key) {
+				return i
+			}
+		}
+		return -1
+	}
+
+	emitChange(before, change, direction) {
+		const after = this.snapshot()
+		for (const callback of this.state.subscribers) {
+			callback(change, this, direction, before, after)
+		}
+		return this
+	}
+}
+
 class StoredObjectBridge {
 	constructor(options = {}) {
 		this.objects = new Map()
@@ -679,6 +894,7 @@ class StoredObjectBridge {
 		this.liveHeartbeatTimer = undefined
 		this.liveSubscriptions = new Set()
 		this.liveObjects = new Map()
+		this.liveQueries = new Map()
 		this.liveDisposeHandler = undefined
 		this._options = undefined
 		this.setOptions(options)
@@ -720,6 +936,10 @@ class StoredObjectBridge {
 			this.types.set(key, res)
 		}
 		return res
+	}
+
+	query(type, options = {}) {
+		return new StoredQuery(this, type, options)
 	}
 
 	object(type, id, data) {
@@ -867,6 +1087,22 @@ class StoredObjectBridge {
 		return this
 	}
 
+	trackQuery(query) {
+		const key = query.queryKey()
+		let queries = this.liveQueries.get(key)
+		if (!queries) {
+			queries = new Set()
+			this.liveQueries.set(key, queries)
+		}
+		queries.add(query)
+		return query
+	}
+
+	subscribeQuery(query, options = {}) {
+		this.trackQuery(query)
+		return this.subscribeLive(query.target(), options)
+	}
+
 	objectReferences(value, found = []) {
 		if (Array.isArray(value)) {
 			for (const item of value) {
@@ -882,22 +1118,28 @@ class StoredObjectBridge {
 		return found
 	}
 
-	subscribeLive(target) {
+	subscribeLive(target, options = {}) {
 		if (!this.live || !this.EventSource) {
 			return Promise.resolve(undefined)
 		}
 		const key = JSON.stringify(target)
 		if (this.liveSubscriptions.has(key)) {
-			return this.liveReady || Promise.resolve(undefined)
+			return this.connectLive().then(() => {
+				if (options.snapshot) {
+					this.sendLiveCommands([{ op: "subscribe", target, snapshot: true }])
+				}
+				return this.liveChannel
+			})
 		}
 		this.liveSubscriptions.add(key)
 		return this.connectLive().then(() => {
 			this.sendLiveCommands([
-				{ op: "subscribe", target },
+				{ op: "subscribe", target, ...(options.snapshot ? { snapshot: true } : {}) },
 			])
 		}).catch((error) => {
 			this.liveSubscriptions.delete(key)
 			this.reportLiveError(error)
+			throw error
 		})
 	}
 
@@ -929,7 +1171,7 @@ class StoredObjectBridge {
 		}
 		const events = channel.events || `${this.livePath}/${channel.id}/events`
 		this.liveSource = new this.EventSource(this.url(events))
-		for (const name of ["create", "update", "remove", "batch"]) {
+		for (const name of ["create", "update", "remove", "batch", "snapshot", "query"]) {
 			this.liveSource.addEventListener(name, (event) => this.onLiveEvent(name, event))
 		}
 		this.liveSource.addEventListener("ping", () => this.scheduleLiveHeartbeat())
@@ -1008,11 +1250,37 @@ class StoredObjectBridge {
 		}
 		if (name === "batch") {
 			for (const item of data.events || []) {
-				this.onLiveData(item.event || "update", item)
+				if ((item.event || "update") === "query") {
+					this.onLiveQuery(item)
+				} else {
+					this.onLiveData(item.event || "update", item)
+				}
 			}
 			return this
 		}
+		if (name === "snapshot") {
+			return this.onLiveSnapshot(data)
+		}
+		if (name === "query") {
+			return this.onLiveQuery(data)
+		}
 		return this.onLiveData(name, data)
+	}
+
+	onLiveSnapshot(data) {
+		const queries = this.queryTargets(data.target)
+		for (const query of queries) {
+			query.applySnapshot(data)
+		}
+		return this
+	}
+
+	onLiveQuery(data) {
+		const queries = this.queryTargets(data.target)
+		for (const query of queries) {
+			query.applyDelta(data)
+		}
+		return this
 	}
 
 	onLiveData(name, data) {
@@ -1058,6 +1326,11 @@ class StoredObjectBridge {
 			void relation.refresh().catch((error) => this.reportLiveError(error))
 		}
 		return this
+	}
+
+	queryTargets(target) {
+		const key = this.queryKey(target)
+		return key ? (this.liveQueries.get(key) || []) : []
 	}
 
 	scheduleLiveHeartbeat() {
@@ -1115,6 +1388,12 @@ class StoredObjectBridge {
 		this.liveChannel = undefined
 		this.liveReady = undefined
 		this.liveSubscriptions.clear()
+		for (const queries of this.liveQueries.values()) {
+			for (const query of queries) {
+				query.failSync(new Error("Live storage channel closed before query snapshot completed"))
+			}
+		}
+		this.liveQueries.clear()
 		if (channel) {
 			const path = this.url(channel.close || `${this.livePath}/${channel.id}/close`)
 			if (globalThis.navigator && typeof globalThis.navigator.sendBeacon === "function") {
@@ -1470,6 +1749,10 @@ class StoredObjectBridge {
 		return `${this.routeType(type)}:${String(id)}`
 	}
 
+	queryKey(target) {
+		return target && target.kind === "query" ? JSON.stringify(target) : undefined
+	}
+
 	routeType(type) {
 		const key = this.normalizeType(type)
 		return this.typeRoutes.get(key) || key
@@ -1589,6 +1872,7 @@ const ObjectStorageBridge = StoredObjectBridge
 export default bridge
 export {
 	StoredAttributes,
+	StoredQuery,
 	StoredObjectBridge,
 	ObjectStorageBridge,
 	StorageBridge,

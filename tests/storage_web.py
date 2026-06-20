@@ -50,12 +50,27 @@ class WebBlob(StoredRaw):
 	pass
 
 
+@http("owners")
+class WebOwner(StoredObject):
+	PROPERTIES = dict(name=Types.STRING)
+
+
+@http("members")
+class WebMember(StoredObject):
+	OWNERSHIP = lambda: WebOwner.Owns(required=True, cascade=False)
+	PROPERTIES = dict(value=Types.STRING)
+
+
 class StorageWebTest(unittest.TestCase):
 	def setUp(self):
 		self.path = tempfile.mkdtemp(prefix="storage-web-")
-		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(WebItem, WebTag)
+		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(
+			WebItem, WebTag, WebOwner, WebMember
+		)
 		self.raw = RawStorage(DirectoryBackend(self.path)).use(WebBlob)
-		self.server = StorageServer(prefix="/api", classes=(WebItem, WebTag, WebBlob))
+		self.server = StorageServer(
+			prefix="/api", classes=(WebItem, WebTag, WebBlob, WebOwner, WebMember)
+		)
 		self.kv = KVStorage(
 			KVMemoryBackend(),
 			normalizer=StringKVKeyNormalizer(),
@@ -154,6 +169,83 @@ class StorageWebTest(unittest.TestCase):
 		response, payload = self.request("GET", f"/api/items/{missingId}?strict")
 		self.assertEqual(response.status, 404)
 		self.assertEqual(payload.decode("utf8"), "Not Found")
+
+	def testMarkdownReadEndpoints(self):
+		tag = WebTag(label="alpha-tag").save()
+		item = WebItem(value="alpha", tags=[tag]).save()
+		self.kv.set("user:1", {"name": "Alice"})
+
+		response, payload = self.request("GET", f"/api/items/{item.id}.md")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(
+			response.headers.headers.get("Content-Type"),
+			"text/markdown; charset=utf-8",
+		)
+		self.assertIn(f"- id: {item.id}", text)
+		self.assertIn("- value: alpha", text)
+
+		response, payload = self.request("GET", "/api/items/list.md")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("- count: 1", text)
+		self.assertIn(f"- id: {item.id}", text)
+
+		response, payload = self.request("GET", f"/api/items/{item.id}/relations/tags/count.md")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("- relation: tags", text)
+		self.assertIn("- count: 1", text)
+
+		response, payload = self.request("GET", "/api/kv/cache/get/user%3A1.md")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("- key: user:1", text)
+		self.assertIn("- name: Alice", text)
+
+		response, payload = self.request("GET", f"/api/items/{item.id}/describe.md?prefix=hi-")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("- value: hi-alpha", text)
+
+	def testXMLReadEndpoints(self):
+		tag = WebTag(label="beta-tag").save()
+		item = WebItem(value="beta", tags=[tag]).save()
+		self.kv.set("user:2", {"name": "Bob"})
+
+		response, payload = self.request("GET", f"/api/items/{item.id}.xml")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertEqual(
+			response.headers.headers.get("Content-Type"),
+			"application/xml; charset=utf-8",
+		)
+		self.assertIn("<?xml version=\"1.0\" encoding=\"utf-8\"?>", text)
+		self.assertIn(f"<id>{item.id}</id>", text)
+		self.assertIn("<value>beta</value>", text)
+
+		response, payload = self.request("GET", "/api/items/list.xml")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("<count>1</count>", text)
+		self.assertIn(f"<id>{item.id}</id>", text)
+
+		response, payload = self.request("GET", f"/api/items/{item.id}/relations/tags/count.xml")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("<relation>tags</relation>", text)
+		self.assertIn("<count>1</count>", text)
+
+		response, payload = self.request("GET", "/api/kv/cache/get/user%3A2.xml")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("<key>user:2</key>", text)
+		self.assertIn("<name>Bob</name>", text)
+
+		response, payload = self.request("GET", f"/api/items/{item.id}/describe.xml?prefix=hi-")
+		text = payload.decode("utf8")
+		self.assertEqual(response.status, 200)
+		self.assertIn("<value>hi-beta</value>", text)
 
 	def testReadonly(self):
 		readonly = StorageServer(prefix="/api", classes=(WebItem,), readonly=True)
@@ -619,7 +711,9 @@ class StorageWebTest(unittest.TestCase):
 
 	def testChannelSSEFromJournal(self):
 		self.objects.release()
-		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(WebItem)
+		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(
+			WebItem, WebOwner, WebMember
+		)
 		item = WebItem(value="alpha").save()
 		response, channel = self.requestJSON("POST", "/api/channel")
 		self.assertEqual(response.status, 200)
@@ -678,6 +772,86 @@ class StorageWebTest(unittest.TestCase):
 		response, closed = self.requestJSON("POST", f"/api/channel/{channel['id']}/close")
 		self.assertEqual(response.status, 200)
 		self.assertTrue(closed["ok"])
+
+	def testOwnerQueryChannelSnapshotAndDeltas(self):
+		self.objects.release()
+		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(
+			WebItem, WebTag, WebOwner, WebMember
+		)
+		owner = WebOwner(name="Alice").save()
+		member = WebMember(value="alpha", owner=owner).save()
+		response, channel = self.requestJSON("POST", "/api/channel")
+		self.assertEqual(response.status, 200)
+
+		async def run():
+			async def post_json(path, data):
+				request = AWSLambdaEvent.AsRequest(
+					AWSLambdaEvent.Create(
+						"POST",
+						path,
+						body=json.dumps(data),
+						headers={"Content-Type": "application/json"},
+					)
+				)
+				response = self.app.process(request)
+				if not isinstance(response, HTTPResponse):
+					response = await response
+				return response
+
+			request = AWSLambdaEvent.AsRequest(
+				AWSLambdaEvent.Create("GET", f"/api/channel/{channel['id']}/events")
+			)
+			response = self.app.process(request)
+			if not isinstance(response, HTTPResponse):
+				response = await response
+			self.assertEqual(response.status, 200)
+			stream = response.body.stream
+			try:
+				ready = await anext(stream)
+				self.assertIn("event: ready", ready)
+				await post_json(
+					f"/api/channel/{channel['id']}/commands",
+					{
+						"commands": [
+							{
+								"op": "subscribe",
+								"snapshot": True,
+								"target": {
+									"kind": "query",
+									"type": "members",
+									"owner": owner.id,
+								},
+							}
+						]
+					},
+				)
+				snapshot = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: snapshot", snapshot)
+				self.assertIn('"count":1', snapshot)
+				self.assertIn(str(member.getLocalID()), snapshot)
+
+				created = WebMember(value="beta", owner=owner).save()
+				added = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: query", added)
+				self.assertIn('"change":"added"', added)
+				self.assertIn(str(created.getLocalID()), added)
+
+				created.value = "gamma"
+				created.save()
+				updated = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: query", updated)
+				self.assertIn('"change":"updated"', updated)
+				self.assertIn('"value":"gamma"', updated)
+
+				created.remove()
+				removed = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: query", removed)
+				self.assertIn('"change":"removed"', removed)
+				self.assertIn(str(created.getLocalID()), removed)
+			finally:
+				await stream.aclose()
+
+		asyncio.run(run())
 
 
 if __name__ == "__main__":
