@@ -113,7 +113,7 @@ class StoredObject(Storable):
 	COMPUTED_PROPERTIES: ClassVar[list[str]] = []
 	RELATIONS: ClassVar[dict[str, Type["StoredObject"]]] = {}
 	OWNERSHIP: ClassVar[Optional[Ownership]] = None
-	RESERVED: ClassVar[list[str]] = ["type", "id", "owner", "revision", "updates"]
+	RESERVED: ClassVar[list[str]] = ["type", "id", "owner", "partition", "revision", "updates"]
 	INDEXES: ClassVar[list[Index]] = []
 
 	@classmethod
@@ -125,6 +125,10 @@ class StoredObject(Storable):
 		ownership_definition = cls.OWNERSHIP
 		if ownership_definition is None or isinstance(ownership_definition, Ownership):
 			return ownership_definition
+		if inspect.isclass(ownership_definition) and issubclass(
+			ownership_definition, StoredObject
+		):
+			ownership_definition = Ownership(ownership_definition)
 		if callable(ownership_definition):
 			parameters = inspect.signature(ownership_definition).parameters
 			ownership_definition = (
@@ -132,10 +136,6 @@ class StoredObject(Storable):
 				if len(parameters) == 1
 				else ownership_definition()
 			)
-		if inspect.isclass(ownership_definition) and issubclass(
-			ownership_definition, StoredObject
-		):
-			ownership_definition = Ownership(ownership_definition)
 		if not isinstance(ownership_definition, Ownership):
 			raise ValueError(
 				f"OWNERSHIP for {cls.__name__} must resolve to Ownership or StoredObject class"
@@ -189,77 +189,82 @@ class StoredObject(Storable):
 		return f"{cls.ID_PREFIX}-{id}" if cls.ID_PREFIX else id
 
 	@classmethod
-	def OwnerBucket(cls, owner: Optional[Any] = None) -> str:
-		if owner is None:
+	def PartitionBucket(cls, partition: Optional[Any] = None) -> str:
+		if partition is None:
 			return "0"
-		if isinstance(owner, StoredObject):
-			return str(owner.id)
-		if isinstance(owner, dict):
-			owner_id = owner.get("id")
-			if owner_id is not None:
-				return str(owner_id)
-		if isinstance(owner, (tuple, list)) and owner:
-			return str(owner[0])
-		return str(owner)
+		if isinstance(partition, StoredObject):
+			return str(partition.id)
+		if isinstance(partition, dict):
+			partition_id = partition.get("partition") or partition.get("id")
+			if partition_id is not None:
+				return str(partition_id)
+		if isinstance(partition, (tuple, list)) and partition:
+			return str(partition[0])
+		return str(partition)
+
+	@classmethod
+	def OwnerBucket(cls, owner: Optional[Any] = None) -> str:
+		return cls.PartitionBucket(owner)
 
 	@classmethod
 	def NormalizeID(cls, id: Any = None, owner: Any = NOTHING) -> Any:
-		ownership = cls.GetOwnership()
-		if not ownership:
-			return tuple(id) if isinstance(id, list) else id
 		if isinstance(id, list):
-			id = tuple(id)
-		if owner is not NOTHING:
-			local_id = id[1] if isinstance(id, (tuple, list)) and len(id) == 2 else id
-			return (owner.id if isinstance(owner, StoredObject) else owner, local_id)
-		if isinstance(id, (tuple, list)) and len(id) == 2:
-			return (id[0], id[1])
+			return id[1] if cls.GetOwnership() and len(id) == 2 else tuple(id)
+		if isinstance(id, tuple) and cls.GetOwnership() and len(id) == 2:
+			return id[1]
 		return id
 
 	@classmethod
-	def SplitID(cls, id: Any, owner: Any = NOTHING) -> tuple[Any, Any]:
-		normalized = cls.NormalizeID(id, owner=owner)
-		if cls.GetOwnership():
-			if isinstance(normalized, (tuple, list)) and len(normalized) == 2:
-				return normalized[0], normalized[1]
-			raise ValueError(
-				f"Owned class {cls.__name__} requires an id of the form (ownerId, id)"
-			)
-		return None, normalized
+	def NormalizeOwnerID(cls, owner: Any = None) -> Any:
+		if owner is NOTHING:
+			return NOTHING
+		if owner is None:
+			return None
+		if isinstance(owner, StoredObject):
+			return owner.id
+		if isinstance(owner, dict):
+			return owner.get("id")
+		if isinstance(owner, (tuple, list)) and owner:
+			return owner[0]
+		return owner
 
 	@classmethod
-	def _SplitScopedID(cls, id, owner=NOTHING):
-		owner_id, local_id = cls.SplitID(id, owner=owner)
-		return cls.OwnerBucket(owner_id), local_id
+	def NormalizePartition(cls, partition: Any = NOTHING, owner: Any = NOTHING) -> Any:
+		if partition is not NOTHING:
+			return cls.NormalizeOwnerID(partition)
+		if owner is not NOTHING:
+			return cls.NormalizeOwnerID(owner)
+		return None
 
 	@classmethod
-	def All(cls, since=None) -> Iterator["StoredObject"]:
+	def All(cls, since=None, order=0) -> Iterator["StoredObject"]:
 		"""Iterates on all the objects of this type in the storage."""
 		storage = cls._ensureStorage()
-		for storage_id in cls.Keys():
+		for storage_id in cls.Keys(order=order):
 			obj = storage.get(storage_id)
 			if obj and (since is None or since < obj.getUpdateTime()):
 				yield obj
 
 	@classmethod
-	def Keys(cls, prefix=None) -> Iterator[str]:
+	def Keys(cls, prefix=None, order=0) -> Iterator[str]:
 		"""List all the keys for objects of this type in the storage."""
-		return cls._ensureStorage().keys(cls, prefix=prefix)
+		return cls._ensureStorage().keys(cls, prefix=prefix, order=order)
 
 	# NOTE: We should return Non when the object does not exist, and provide
 	# an Ensure method that will create the object if necessary.
 	@classmethod
 	def Get(
-		cls, id: Optional[Any] = None, owner: Optional[Any] = NOTHING, key: Optional[str] = None
+		cls,
+		id: Optional[Any] = None,
+		owner: Optional[Any] = NOTHING,
+		partition: Optional[Any] = NOTHING,
+		key: Optional[str] = None,
 	) -> Optional["StoredObject"]:
 		"""Returns the instance associated with the given Object ID, if any"""
 		storage = cls._ensureStorage()
 		if id is None and key is None:
 			return None
-		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
-			id = (id, owner)
-			owner = NOTHING
-		return storage.get(cls.StorageKey(id, owner=owner) if key is None else key)
+		return storage.get(cls.StorageKey(id, owner=owner, partition=partition) if key is None else key)
 
 	@classmethod
 	def Count(cls) -> int:
@@ -267,9 +272,9 @@ class StoredObject(Storable):
 		return cls._ensureStorage().count(cls)
 
 	@classmethod
-	def List(cls, count: int = -1, start: int = 0, end: Optional[int] = None):
+	def List(cls, count: int = -1, start: int = 0, end: Optional[int] = None, order=0):
 		"""Returns the list of objects of this type stored in the storage."""
-		return cls._ensureStorage().list(cls, count, start, end)
+		return cls._ensureStorage().list(cls, count, start, end, order=order)
 
 	@classmethod
 	def OwnedBy(cls, owner: "StoredObject") -> Iterator["StoredObject"]:
@@ -279,40 +284,36 @@ class StoredObject(Storable):
 	@classmethod
 	def OwnerPrefix(cls, owner: Any) -> str:
 		"""Returns the storage key prefix for objects owned by the given owner."""
-		return "%s.%s." % (cls.StoragePrefix(), cls.OwnerBucket(owner))
+		return "%s.%s." % (cls.StoragePrefix(), cls.PartitionBucket(owner))
 
 	@classmethod
-	def Has(cls, id: Any, owner: Optional[Any] = NOTHING) -> bool:
+	def Has(cls, id: Any, owner: Optional[Any] = NOTHING, partition: Optional[Any] = NOTHING) -> bool:
 		"""Tells if there is an object stored with the given object id."""
-		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
-			id = (id, owner)
-			owner = NOTHING
-		return cls._ensureStorage().has(cls.StorageKey(id, owner=owner))
+		return cls._ensureStorage().has(cls.StorageKey(id, owner=owner, partition=partition))
 
 	@classmethod
-	def Ensure(cls, id, owner=NOTHING):
+	def Ensure(cls, id, owner=NOTHING, partition=NOTHING):
 		"""Ensures that there is an object with the given object id in the
 		storage. If not, it will create a new instance of this specific
 		stored object sub-class"""
-		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
-			id = (id, owner)
-			owner = NOTHING
-		res = cls.Get(id, owner=owner)
+		res = cls.Get(id, owner=owner, partition=partition)
 		if res is None:
-			res = cls(id, owner=owner)
+			res = cls(id, owner=owner, partition=partition)
 		return res
 
 	@classmethod
-	def StorageKey(cls, id, owner=NOTHING):
+	def StorageKey(cls, id, owner=NOTHING, partition=NOTHING):
 		"""Returns the storage key associated with the given id of this class."""
 		if isinstance(id, StoredObject):
+			partition = id.partition if partition is NOTHING else partition
 			id = id.id
-		owner_id, local_id = cls._SplitScopedID(id, owner=owner)
+		local_id = cls.NormalizeID(id)
+		partition_value = cls.NormalizePartition(partition=partition, owner=owner)
 		if cls.COLLECTION:
-			return str(cls.COLLECTION) + "." + str(owner_id) + "." + str(local_id)
+			return str(cls.COLLECTION) + "." + cls.PartitionBucket(partition_value) + "." + str(local_id)
 		else:
 			cls.COLLECTION = cls.__name__.split(".")[-1]
-			return cls.StorageKey(local_id, owner=owner_id)
+			return cls.StorageKey(local_id, partition=partition_value)
 
 	@classmethod
 	def StoragePrefix(cls):
@@ -338,6 +339,12 @@ class StoredObject(Storable):
 			return properties
 		else:
 			id = properties.get("id")
+			owner = properties.get("owner")
+			partition = properties.get("partition", NOTHING)
+			if cls.GetOwnership() and isinstance(id, (tuple, list)) and len(id) == 2:
+				owner = owner if owner is not None else id[0]
+				partition = partition if partition is not NOTHING else id[0]
+				id = id[1]
 			otype = properties.get("type")
 			assert not otype or otype == getCanonicalName(cls), (
 				"Expected type %s, got %s" % (getCanonicalName(cls), otype)
@@ -345,7 +352,7 @@ class StoredObject(Storable):
 			# If there is an object ID
 			if id:
 				# We look in the storage for this specific object
-				obj = cls.Get(id)
+				obj = cls.Get(id, owner=owner if owner is not None else NOTHING, partition=partition)
 				# If it exists, we update its properties
 				if obj:
 					# FIXME: I don't see the use case for an `updateProperties`, but am
@@ -367,19 +374,16 @@ class StoredObject(Storable):
 				)
 
 	@classmethod
-	def Export(cls, id, owner=NOTHING, **options):
+	def Export(cls, id, owner=NOTHING, partition=NOTHING, **options):
 		"""A convenient fonction that will return the full object corresponding
 		to the id if it is in base, or will return a stripped down version with
 		id and class."""
 		storage = cls._ensureStorage()
-		if cls.GetOwnership() and owner is not NOTHING and not isinstance(id, (tuple, list)):
-			id = (id, owner)
-			owner = NOTHING
-		o = storage.get(cls.StorageKey(id, owner=owner))
+		o = storage.get(cls.StorageKey(id, owner=owner, partition=partition))
 		if o:
 			return o.export(**options)
 		else:
-			return {"id": asPrimitive(cls.NormalizeID(id, owner=owner)), "type": getCanonicalName(cls)}
+			return {"id": asPrimitive(cls.NormalizeID(id)), "type": getCanonicalName(cls)}
 
 	HAS_DESCRIPTORS = False
 
@@ -427,19 +431,37 @@ class StoredObject(Storable):
 			id = properties.get("id")
 		owner = kwargs.pop("owner", NOTHING)
 		if properties and "owner" in properties and owner is NOTHING:
-			owner = properties.get("owner")
+			owner = properties.pop("owner")
+		partition = kwargs.pop("partition", NOTHING)
+		if properties and "partition" in properties and partition is NOTHING:
+			partition = properties.pop("partition")
+		if self.__class__.GetOwnership() and isinstance(id, (tuple, list)) and len(id) == 2:
+			legacy_owner, id = id
+			if owner is NOTHING:
+				owner = legacy_owner
+			if partition is NOTHING:
+				partition = legacy_owner
 		# If we really can't find an id, we generate a new one
 		if id is None:
 			id = self.GenerateID()
-		self.id = self.__class__.NormalizeID(id, owner=owner)
+		self.id = self.__class__.NormalizeID(id)
 		self.storage = self.STORAGE
 		if not self.__class__.HAS_DESCRIPTORS:
 			self.__class__._GenerateDescriptors(self)
 		self._properties = {}
 		self._relations = {}
 		self._owner = None
+		self._ownerID = None
+		self._partition = None
+		self._allowPartitionChange = True
 		self._revision = {}
 		self._isNew = restored
+		if partition is NOTHING and owner is not NOTHING:
+			partition = owner
+		if partition is not NOTHING:
+			self.setPartition(partition)
+		if owner is not NOTHING:
+			self.setOwner(owner)
 		self.set(properties, skipExtraProperties=skipExtraProperties)
 		self.set(kwargs, skipExtraProperties=skipExtraProperties)
 		# We make sure revision is updated first.
@@ -448,12 +470,14 @@ class StoredObject(Storable):
 		if kwargs:
 			self._revision.update(kwargs.get("revision") or kwargs.get("updates") or {})
 		if self.STORAGE and (not self.getOwnership() or self.hasOwner() or restored):
+			self._allowPartitionChange = False
 			self.STORAGE.register(self, restored=restored)
 		# We make sure that there's a timestamp for the object, we default it to 0
 		if "id" not in self._revision:
 			self._revision["id"] = getTimestamp()
 		# FIXME: Should we make sure that the object had updates for everything?
 		assert (not self.getOwnership() or self.id), "Owned object must have an id once created"
+		self._allowPartitionChange = False
 		self.init()
 
 	@property
@@ -475,6 +499,8 @@ class StoredObject(Storable):
 					self.setRelation(name, value, timestamp)
 				elif name == "owner":
 					self.setOwner(value, timestamp)
+				elif name == "partition":
+					self.setPartition(value, timestamp)
 				elif name in self.RESERVED:
 					if name in ("revision", "updates"):
 						for k in value:
@@ -586,14 +612,33 @@ class StoredObject(Storable):
 		return self._owner
 
 	def getOwnerID(self):
-		if self.getOwnership() and isinstance(self.id, (tuple, list)) and len(self.id) == 2:
-			return self.id[0]
-		return None
+		return getattr(self, "_ownerID", None) if self.getOwnership() else None
 
 	def getLocalID(self):
-		if self.getOwnership() and isinstance(self.id, (tuple, list)) and len(self.id) == 2:
-			return self.id[1]
 		return self.id
+
+	def getPartition(self):
+		return getattr(self, "_partition", None)
+
+	def setPartition(self, partition: Optional[Any], timestamp=None) -> Self:
+		partition_id = self.__class__.NormalizePartition(partition=partition)
+		current = getattr(self, "_partition", None)
+		if current is not None and str(current) == str(partition_id):
+			return self
+		if current != partition_id and not getattr(self, "_allowPartitionChange", False):
+			raise ValueError(f"Partition is immutable for {self.__class__.__name__}:{self.id}")
+		self._partition = partition_id
+		if not self._isNew:
+			self._revision["partition"] = self._revision["id"] = max(
+				getTimestamp() if timestamp is None else timestamp,
+				self._revision.get("partition", -1),
+			)
+		return self
+
+	def hasPartition(self) -> bool:
+		return self.getPartition() is not None
+
+	partition = property(getPartition, setPartition)
 
 	def ownerKey(self) -> Optional[str]:
 		owner = self.getOwner()
@@ -607,22 +652,35 @@ class StoredObject(Storable):
 					f"{self.__class__.__name__} requires an owner of type {ownership.ownerType.__name__}"
 				)
 			self._owner = None
+			self._ownerID = None
 			return self
-		restored = restore(owner)
-		if not isinstance(restored, StoredObject):
-			raise ValueError(f"Owner must be a stored object, got {type(restored)}: {restored}")
 		if not ownership:
 			raise ValueError(f"{self.__class__.__name__} does not declare OWNERSHIP")
-		if not isinstance(restored, ownership.ownerType):
+		restored = restore(owner)
+		if isinstance(restored, StoredObject):
+			if not isinstance(restored, ownership.ownerType):
+				raise ValueError(
+					f"{self.__class__.__name__} expects owner of type {ownership.ownerType.__name__}, got {type(restored).__name__}"
+				)
+			owner_id = restored.id
+			self._owner = restored
+		else:
+			owner_id = self.__class__.NormalizeOwnerID(restored)
+			self._owner = None
+		if owner_id is None:
 			raise ValueError(
-				f"{self.__class__.__name__} expects owner of type {ownership.ownerType.__name__}, got {type(restored).__name__}"
+				f"Owner must be a stored object or owner id, got {type(restored)}: {restored}"
 			)
 		current_owner_id = self.getOwnerID()
-		if current_owner_id is not None and str(current_owner_id) != str(restored.id):
+		if (
+			current_owner_id is not None
+			and str(current_owner_id) != str(owner_id)
+			and not getattr(self, "_allowPartitionChange", False)
+		):
 			raise ValueError(f"Owner is immutable for {self.__class__.__name__}:{self.id}")
-		local_id = self.getLocalID()
-		self.id = self.__class__.NormalizeID(local_id, owner=restored)
-		self._owner = restored
+		self._ownerID = owner_id
+		if self.getPartition() is None:
+			self.setPartition(owner_id, timestamp=timestamp)
 		if not self._isNew:
 			self._revision["owner"] = self._revision["id"] = max(
 				getTimestamp() if timestamp is None else timestamp,
@@ -666,7 +724,7 @@ class StoredObject(Storable):
 
 	def getStorageKey(self) -> str:
 		"""Returns the key used to store this object in a storage."""
-		return self.__class__.StorageKey(self.id)
+		return self.__class__.StorageKey(self.id, partition=self.partition)
 
 	def setStorage(self, storage: "ObjectStorage") -> Self:
 		"""Sets the storage object associated with this object."""
@@ -739,6 +797,14 @@ class StoredObject(Storable):
 		what is returned by `__getstate__`"""
 		if "_updates" in state and "_revision" not in state:
 			state["_revision"] = state.pop("_updates")
+		if self.__class__.GetOwnership() and isinstance(state.get("id"), (tuple, list)) and len(state.get("id")) == 2:
+			owner_id, local_id = state["id"]
+			state["id"] = local_id
+			state.setdefault("_ownerID", owner_id)
+			state.setdefault("_partition", owner_id)
+		state.setdefault("_ownerID", None)
+		state.setdefault("_partition", None)
+		state.setdefault("_allowPartitionChange", False)
 		self.__dict__.update(state)
 		self.__dict__["storage"] = self.STORAGE
 		# FIXME: Should not be direct like that
@@ -774,6 +840,12 @@ class StoredObject(Storable):
 			"type": self.getTypeName(),
 			"revision": self._revision,
 		}
+		if self.getPartition() is not None:
+			res["partition"] = asPrimitive(self.getPartition())
+		if self.getOwnership():
+			owner_id = self.getOwnerID()
+			if owner_id is not None:
+				res["owner"] = asPrimitive(owner_id)
 		depth = 1
 		if "depth" in options:
 			depth = options["depth"]
@@ -1165,7 +1237,7 @@ class ObjectStorage:
 		self.lock.release()
 		return self
 
-	def _restore(self, exportedStoredObject: dict[str, Any]) -> StoredObject:
+	def _restore(self, exportedStoredObject: dict[str, Any], key: str | None = None) -> StoredObject:
 		# NOTE: We call restore only when the object was not already in cache
 		# NOTE: Exported stored object  is expected to be a dict as give
 		# by StoredObject.export
@@ -1178,15 +1250,38 @@ class ObjectStorage:
 		# FIXME: Should check if the exported stored object is in cache first!
 		actual_class = self._declaredClasses.get(oclass)
 		if actual_class:
-			key = actual_class.StorageKey(id)
-			assert key not in self._cache
+			if isinstance(id, (tuple, list)) and actual_class.GetOwnership() and len(id) == 2:
+				owner_id, local_id = id
+				exportedStoredObject["id"] = local_id
+				exportedStoredObject.setdefault("owner", owner_id)
+				exportedStoredObject.setdefault("partition", owner_id)
+				id = local_id
+			if key and "partition" not in exportedStoredObject:
+				parts = key.split(".", 2)
+				if len(parts) == 3 and parts[1] != actual_class.PartitionBucket(None):
+					exportedStoredObject["partition"] = parts[1]
+					if actual_class.GetOwnership() and "owner" not in exportedStoredObject:
+						exportedStoredObject["owner"] = parts[1]
+			owner = exportedStoredObject.get("owner")
+			partition = exportedStoredObject.get("partition")
+			storage_key = actual_class.StorageKey(id, owner=owner, partition=partition)
+			assert storage_key not in self._cache
 			# We instanciate the object, which will then be available in the cache, as
 			# the constructor calls Storage.register.
 			new_object = actual_class(id, exportedStoredObject, restored=True)
-			assert key in self._cache
+			assert storage_key in self._cache
 			return new_object
 		else:
 			raise Exception("Class not registered in ObjectStorage: %s" % (oclass))
+
+	def _injectOwner(self, value: dict[str, Any], owner_id: str) -> None:
+		"""Legacy no-op kept for callers that imported the private helper."""
+		if isinstance(value, dict):
+			for v in value.values():
+				self._injectOwner(v, owner_id)
+		elif isinstance(value, list):
+			for item in value:
+				self._injectOwner(item, owner_id)
 
 	def add(self, storedObject: StoredObject, creation: bool = False):
 		"""Sets the given value to the given key, storing it in cache. Note that
@@ -1253,7 +1348,7 @@ class ObjectStorage:
 			value = self.backend.get(key)
 			if value:
 				value = self.deserializeObjectExport(value)
-				value = self._restore(value)
+				value = self._restore(value, key=key)
 				if value is not None:
 					try:
 						self._cache[key] = value
@@ -1284,7 +1379,7 @@ class ObjectStorage:
 	def count(self, storedObjectClasses=None):
 		return self.backend.count(self._getStoragePrefix(storedObjectClasses))
 
-	def keys(self, storedObjectClasses=None, prefix=None):
+	def keys(self, storedObjectClasses=None, prefix=None, order=0):
 		# FIXME: Not sure if we should list the cache fist...
 		# for key in self._cache.keys():
 		# 	if not prefix or key.startswith(prefix):
@@ -1295,24 +1390,57 @@ class ObjectStorage:
 				p = [_ + "." + prefix for _ in p]
 			else:
 				p = prefix
-		for key in self.backend.keys(p):
+		for key in self.backend.keys(p, order=order):
 			if self._matchesPrefix(key, p):
 				yield key
 
 	# FIXME: Should be updated according to raw storage
-	def list(self, storedObjectClasses=None, count=-1, start=0, end=None):
+	def list(self, storedObjectClasses=None, count=-1, start=0, end=None, order=0):
 		"""Lists (iterates) the stored objects belonging to the given class. Note that
 		there is no guaranteed ordering in the keys, so this might return different
 		results depending on how many keys there are."""
 		end = end if end >= 0 else (start + count if count > 0 else None)
 		i = 0
-		for key in self.keys(storedObjectClasses):
+		for key in self.keys(storedObjectClasses, order=order):
 			if count != 0:
 				if i >= start and (i < end or end is None):
 					if count > 0:
 						count -= 1
 					yield self.get(key)
 			i += 1
+
+	def changeOwner(self, storedObject: StoredObject, owner: Optional[StoredObject]):
+		oldKey = storedObject.getStorageKey()
+		try:
+			storedObject._allowPartitionChange = True
+			storedObject.owner = owner
+			storedObject.partition = owner.id if isinstance(owner, StoredObject) else owner
+			storedObject.save()
+		finally:
+			storedObject._allowPartitionChange = False
+		newKey = storedObject.getStorageKey()
+		if newKey != oldKey:
+			self._cache.pop(oldKey, None)
+			self._syncQueue.pop(oldKey, None)
+			if self.backend.has(oldKey):
+				self.backend.remove(oldKey)
+		return storedObject
+
+	def changePartition(self, storedObject: StoredObject, partition: Optional[Any]):
+		oldKey = storedObject.getStorageKey()
+		try:
+			storedObject._allowPartitionChange = True
+			storedObject.partition = partition
+			storedObject.save()
+		finally:
+			storedObject._allowPartitionChange = False
+		newKey = storedObject.getStorageKey()
+		if newKey != oldKey:
+			self._cache.pop(oldKey, None)
+			self._syncQueue.pop(oldKey, None)
+			if self.backend.has(oldKey):
+				self.backend.remove(oldKey)
+		return storedObject
 
 	def isCached(self, key):
 		"""Tells if the given key is found in cache."""
@@ -1396,7 +1524,7 @@ class ObjectStorage:
 		for ownedClass in classes:
 			# TODO: Fall back to a dedicated owner index if key layout ever stops
 			# encoding ownership as `<collection>.<owner>.<local>`.
-			for key in self.keys(ownedClass, prefix=ownedClass.OwnerBucket(owner) + "."):
+			for key in self.keys(ownedClass, prefix=ownedClass.PartitionBucket(owner) + "."):
 				item = self.get(key)
 				if item:
 					yield item

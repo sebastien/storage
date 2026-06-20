@@ -50,11 +50,8 @@ class DirectoryBackend(StorageBackend):
 		if extension is not None:
 			self.DATA_EXTENSION = extension
 		parent_dir = os.path.dirname(os.path.abspath(self.root))
-		assert os.path.isdir(parent_dir), (
-			"DirectoryBacked root parent does not exists: %s" % (parent_dir)
-		)
-		if not os.path.isdir(self.root):
-			os.mkdir(self.root)
+		os.makedirs(parent_dir, exist_ok=True)
+		os.makedirs(self.root, exist_ok=True)
 
 	# =========================================================================
 	# BACKEND METHODS

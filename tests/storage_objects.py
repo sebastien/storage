@@ -144,7 +144,8 @@ class StoredObjectTest(unittest.TestCase):
 		other = Project(name="Archive").save()
 		task = OwnedTask(name="Todo", owner=project).save()
 		self.assertIs(task.owner, project)
-		self.assertEqual(task.id, (project.id, task.getLocalID()))
+		self.assertEqual(task.id, task.getLocalID())
+		self.assertEqual(task.partition, project.id)
 		self.assertRaises(ValueError, task.setOwner, other)
 
 	def testOwnedBy(self):
@@ -153,21 +154,23 @@ class StoredObjectTest(unittest.TestCase):
 		task = OwnedTask(name="Todo", owner=project).save()
 		OwnedTask(name="Elsewhere", owner=other).save()
 		self.assertEqual([task.id], [_.id for _ in OwnedTask.OwnedBy(project)])
-		self.assertEqual(task.id, OwnedTask.Get(project.id, task.getLocalID()).id)
-		self.assertEqual(task.id, OwnedTask.Get(task.id).id)
+		self.assertEqual(task.id, OwnedTask.Get(task.id, owner=project).id)
+		self.assertEqual(task.id, OwnedTask.Get(task.id, partition=project.id).id)
 
 	def testOwnershipExportRestore(self):
 		project = Project(name="Storage").save()
 		task = OwnedTask(name="Todo", owner=project).save()
 		exported = task.export()
-		self.assertEqual(tuple(exported["id"]), task.id)
-		self.assertEqual(OwnedTask.Get(task.id).owner.id, project.id)
+		self.assertEqual(exported["id"], task.id)
+		self.assertEqual(exported["owner"], project.id)
+		self.assertEqual(exported["partition"], project.id)
+		self.assertEqual(OwnedTask.Get(task.id, owner=project).owner.id, project.id)
 
 	def testOwnershipCascadeDelete(self):
 		project = Project(name="Storage").save()
 		comment = OwnedComment(body="Hi", owner=project).save()
 		project.remove()
-		self.assertFalse(OwnedComment.Has(comment.id))
+		self.assertFalse(OwnedComment.Has(comment.id, partition=project.id))
 
 	def testOwnershipPath(self):
 		project = Project(name="Storage").save()

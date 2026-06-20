@@ -489,14 +489,6 @@ class StorageServer(Service):
 			yield value
 
 	def publicID(self, storableClass, value, request):
-		if (
-			self.isScoped(self.resolvedOwner(request, storableClass))
-			and hasattr(storableClass, "GetOwnership")
-			and storableClass.GetOwnership()
-			and isinstance(value, (tuple, list))
-			and len(value) == 2
-		):
-			return value[1]
 		return value
 
 	def toPublicValue(self, value, request):
@@ -515,6 +507,7 @@ class StorageServer(Service):
 			if match:
 				storableClass, _info = match
 				result["id"] = self.publicID(storableClass, result["id"], request)
+				result.pop("partition", None)
 		return result
 
 	def kv(self, name, store, readonly=None, export=None):

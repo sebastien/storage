@@ -103,13 +103,13 @@ class SchemaTest(unittest.TestCase):
 		self.writeMigration(
 			"1-rename_name.py",
 			f"""
-			from storage import schemaChanges
+			from storage import migration
 			from {__name__} import makeStoredObjectClass
 
 			SchemaUser = makeStoredObjectClass("SchemaUser")
 
-			@schemaChanges.renameProperty(SchemaUser, "fullName", "name")
-			def apply(storage):
+			@migration(migration.rename(SchemaUser, "fullName", "name"))
+			def apply(m):
 				pass
 			""",
 		)
@@ -134,17 +134,20 @@ class SchemaTest(unittest.TestCase):
 		self.writeMigration(
 			"1-split_name.py",
 			f"""
-			from storage import Types, schemaChanges
+			from storage import Types, migration
 			from {__name__} import makeStoredObjectClass
 
 			SchemaUser = makeStoredObjectClass("SchemaUser")
 
-			@schemaChanges.splitProperty(
-				SchemaUser,
-				"fullName",
-				{{"firstName": Types.STRING, "lastName": Types.STRING}},
+			@migration(
+				migration.split(
+					SchemaUser,
+					"fullName",
+					firstName=Types.STRING,
+					lastName=Types.STRING,
+				)
 			)
-			def apply(storage):
+			def apply(m):
 				pass
 			""",
 		)

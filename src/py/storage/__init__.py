@@ -16,6 +16,7 @@ from .backends.sqlite import KVSqliteBackend as KVSqliteBackend
 from .backends.journal import JournalBackend as JournalBackend
 from .backends.journal import JournalPersistence as JournalPersistence
 from .backends.journal import MemoryJournalPersistence as MemoryJournalPersistence
+from .migrations import migration as migration
 from .migrations import MigrationOperator as MigrationOperator
 from .schema import SCHEMA_METADATA_KEY as SCHEMA_METADATA_KEY
 from .schema import Schema as Schema

@@ -49,7 +49,7 @@ class StoredQuery:
 			return self.storableClass.StoragePrefix()
 		return "%s.%s." % (
 			self.storableClass.StoragePrefix(),
-			self.storableClass.OwnerBucket(owner_id),
+			self.storableClass.PartitionBucket(owner_id),
 		)
 
 	def list(self, start: int = 0, end: Optional[int] = None, count: Optional[int] = None):

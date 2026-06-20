@@ -5,6 +5,9 @@ const DEFAULT_LIVE_COMMAND_DELAY = 200
 const DEFAULT_LIVE_HEARTBEAT = 30000
 
 const isSameJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const isScopedID = (value) => Array.isArray(value) && value.length === 2
+const scopedIDText = (value) =>
+	isScopedID(value) ? `${value[0]}:${value[1]}` : String(value)
 
 class StorageBridgeError extends Error {
 	constructor(message, response, body) {
@@ -110,7 +113,7 @@ class StoredObject {
 		}
 		this.bridge = bridge
 		this.routeType = type
-		this.id = String(id)
+		this.id = isScopedID(id) ? [...id] : id
 		this.type = type
 		this.revision = {}
 		this.fields = new StoredAttributes(this)
@@ -168,7 +171,10 @@ class StoredObject {
 		if (!data || typeof data !== "object") {
 			throw new Error("StoredObject.apply expects an object")
 		}
-		if (data.id !== undefined && String(data.id) !== this.id) {
+		if (
+			data.id !== undefined &&
+			this.bridge.cacheID(data.id) !== this.bridge.cacheID(this.id)
+		) {
 			throw new Error(`Object id mismatch: expected ${this.id}, got ${data.id}`)
 		}
 		if (data.type !== undefined) {
@@ -1736,7 +1742,7 @@ class StoredObjectBridge {
 	}
 
 	idPath(id) {
-		return encodeURIComponent(String(id)).replace(/%3A/gi, ":")
+		return encodeURIComponent(scopedIDText(id)).replace(/%3A/gi, ":")
 	}
 
 	url(path) {
@@ -1746,7 +1752,11 @@ class StoredObjectBridge {
 	}
 
 	cacheKey(type, id) {
-		return `${this.routeType(type)}:${String(id)}`
+		return `${this.routeType(type)}:${this.cacheID(id)}`
+	}
+
+	cacheID(id) {
+		return scopedIDText(id)
 	}
 
 	queryKey(target) {
