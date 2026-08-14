@@ -1,498 +1,497 @@
-# Storage Module Reference for Agents
+# Storage Module Reference (`storage`)
 
-## Overview
+The `storage` module provides a composable, local-first persistent object storage system for Python applications. It supports structured data models (`StoredObject`), raw binary payloads (`StoredRaw`), append-only metrics (`StoredMetric`), generic key-value stores (`KVStorage`), type-safe properties, bidirectional relations, indexing, schema evolution, and multiple backend implementations.
 
-The storage module provides a composable, persistent object storage system for Python applications. It supports structured objects (`StoredObject`), raw binary data (`StoredRaw`), type-safe properties, relations, and indexing across multiple backend implementations (Memory, Directory, DBM).
+---
 
-## Core Concepts
+## Documentation Navigation
 
-### 1. StoredObject (Structured Data)
+| Document | Focus Area |
+| :--- | :--- |
+| **`ref-storage.md`** *(this document)* | Core abstractions, `StoredObject`, `StoredRaw`, `StoredMetric`, `KVStorage`, `Types`, `Indexing`, `Backends`, and `Schema`. |
+| **[`ref-storage-web.md`](ref-storage-web.md)** | HTTP REST API routing, `@http` decorators, SSE push channels, batch command endpoints, and JavaScript bridge. |
+| **[`ref-storage-queries.md`](ref-storage-queries.md)** | `StoredQuery` live queries, owner-scoped synchronization, and SSE query delta streaming. |
+| **[`ref-storage-migrations.md`](ref-storage-migrations.md)** | `MigrationOperator`, `@migration` context runner, checkpointing, and resumable data migrations. |
 
-**Purpose**: Store structured data with typed properties and relations between objects.
+---
 
-**Key Features**:
-- Type-safe properties using `PROPERTIES` declaration
-- Relations to other `StoredObject` instances via `RELATIONS`
-- Automatic ID generation
-- Optional `ID_PREFIX` support for type-disambiguated identifiers
-- Built-in caching and weak-reference management
-- Indexing support via `INDEX_BY`
-- Export/Import to/from primitive dictionaries
+## Architecture Overview
 
-**Basic Usage**:
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Application Layer                             │
+├─────────────────┬─────────────────┬─────────────────┬───────────────────┤
+│  StoredObject   │    StoredRaw    │  StoredMetric   │     KVStorage     │
+│ (Structured DB) │  (Files/Blobs)  │  (Time-Series)  │ (Key-Value/Cache) │
+├─────────────────┴─────────────────┴─────────────────┴───────────────────┤
+│                    Indexes / Query / Migrations / Web                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                             StorageBackend                              │
+│   ┌───────────────┬─────────────────┬──────────────┬────────────────┐   │
+│   │ MemoryBackend │DirectoryBackend │  DBMBackend  │ SQLiteBackend  │   │
+│   └───────────────┴─────────────────┴──────────────┴────────────────┘   │
+│                   │ JournalBackend (Transactions / SSE) │               │
+└───────────────────┴─────────────────────────────────────┴───────────────┘
+```
+
+---
+
+## Core Abstractions
+
+### 1. `Storable` & `Identifier`
+
+All persistable classes inherit from `Storable`. `Identifier` provides distributed, sortable unique ID generation:
 
 ```python
-from storage import Types, DirectoryBackend, StoredObject
-from storage.objects import ObjectStorage
+from storage import Identifier
 
-# Define a model
-class Account(StoredObject):
+# Generate sortable 64-bit integer timestamp stamp
+stamp = Identifier.Stamp()
+
+# Generate UUID4 string
+uid = Identifier.UUID()
+```
+
+### 2. Primitive Serialization Protocol
+
+* `asPrimitive(value, depth=1)`: Converts stored objects, dates, lists, and dicts into storage-friendly primitive dictionaries.
+* `restore(value)`: Reconstitutes primitive dictionaries with `{"type": "...", "id": "..."}` back into hydrated `StoredObject` instances.
+* `asJSON(value)` / `unJSON(text)`: JSON encoding with automatic restoration.
+
+---
+
+## Structured Data Storage (`StoredObject` & `ObjectStorage`)
+
+`StoredObject` provides structured object modeling with typed properties, relations, revision tracking, and weak-reference caching.
+
+### Defining Models
+
+```python
+from storage import DirectoryBackend, Indexing, Ownership, PublicID, Types
+from storage.objects import ObjectStorage, StoredObject
+
+class User(StoredObject):
+	ID_PREFIX = "USER"
 	PROPERTIES = dict(
-		email=Types.EMAIL,
 		name=Types.STRING,
-		password=Types.STRING,
+		email=Types.EMAIL,
 		roles=Types.LIST(Types.STRING),
-		avatar=Types.STRING,
 	)
-	
 	INDEX_BY = dict(
 		email=Indexing.Normalize,
 		name=Indexing.Normalize,
 	)
 
-# Create storage and register classes
-storage = ObjectStorage(DirectoryBackend("Data/")).use(Account)
+class Project(StoredObject):
+	ID_PREFIX = "PRJ"
+	PROPERTIES = dict(title=Types.STRING)
 
-# Create and save objects
-account = Account(properties={"email": "user@example.com", "name": "John"})
-account.save()
-
-# Add a class prefix when needed
-class User(StoredObject):
-	ID_PREFIX = "USER"
-
-class MeetingNotes(StoredRaw):
-	ID_PREFIX = "MTNG"
-
-# Retrieve by ID
-retrieved = Account.Get(account.id)
-
-# Query all
-for acc in Account.All():
-	print(acc.email)
+class Ticket(StoredObject):
+	ID_PREFIX = "TCK"
+	# Opt-in to partition-scoped sequential human IDs (#1, #2, ...)
+	PUBLIC_ID = PublicID.Partition
+	PUBLIC_ID_NAMESPACE = "tickets"
+	
+	# Scoped ownership
+	OWNERSHIP = Project.Owns(required=True, cascade=False)
+	
+	PROPERTIES = dict(
+		title=Types.STRING,
+		status=Types.ENUM("open", "in_progress", "closed"),
+	)
+	RELATIONS = dict(
+		assignee=User,
+	)
 ```
 
-**Property Access**:
+### Initializing Storage
 
 ```python
-# Direct property access (using descriptors)
-account.email = "new@example.com"
-name = account.name
-
-# Or via methods
-account.setProperty("email", "new@example.com")
-value = account.getProperty("name")
+# Bind models to a storage runtime
+backend = DirectoryBackend("Data/")
+storage = ObjectStorage(backend).use(User, Project, Ticket)
 ```
 
-**Class Methods**:
-- `ClassName.Get(id)` - Retrieve object by ID
-- `ClassName.All()` - Iterate all objects of this type
-- `ClassName.Count()` - Count objects
-- `ClassName.List(count, start, end)` - List objects with pagination
-- `ClassName.Has(id)` - Check if object exists
-- `ClassName.Ensure(id)` - Get or create object
-- `ClassName.Import(properties)` - Create from dict/export
-
-**Instance Methods**:
-- `.save()` - Persist to storage
-- `.remove()` - Delete from storage
-- `.export(**options)` - Convert to primitive dict (depth control)
-- `.update(dict)` - Update multiple properties
-- `.getUpdateTime(key)` - Get timestamp of last update
-
-### 2. StoredRaw (Binary/File Data)
-
-**Purpose**: Store raw binary data (files, images, videos) with associated metadata.
-
-**Key Features**:
-- Separate data and metadata storage
-- Data streaming support
-- File path access for backends that support it
-- Lazy data loading
-- Metadata dictionary
-
-**Basic Usage**:
+### CRUD Operations
 
 ```python
-from storage.raw import StoredRaw, RawStorage
+# 1. Create and save
+user = User(name="Alice", email="alice@example.com", roles=["admin"])
+user.save()
 
-# Define a raw data class
-class Image(StoredRaw):
-	"""Stores image files with metadata"""
-	
-	def getFormat(self):
-		return self.meta("format")
-	
-	def getWidth(self):
-		return self.meta("width")
-	
-	def getHeight(self):
-		return self.meta("height")
+project = Project(title="Core Platform").save()
 
-# Create storage
-raw_storage = RawStorage(DirectoryBackend("Data/")).use(Image)
+# 2. Create owned object with partition
+ticket = Ticket(
+	title="Implement caching",
+	status="open",
+	partition=project.id,
+	owner=project,
+)
+ticket.assignee = user
+ticket.save()
 
-# Store image data
-with open("photo.jpg", "rb") as f:
-	data = f.read()
+# 3. Retrieve by ID
+fetched = User.Get(user.id)
+assert fetched is user  # Same in-memory instance via weak-ref cache
 
-image = Image(data=data, format="jpeg", width=1920, height=1080)
-image.save()
+# 4. List and count
+total_users = User.Count()
+for u in User.All():
+	print(u.name, u.email)
 
-# Access metadata
-width = image.meta("width")
-format = image.meta("format")
+# 5. Partition-scoped public ID lookup
+ticket_one = Ticket.GetByPublicID(1, partition=project.id)
 
-# Access data
-for chunk in image.data():
-	process(chunk)
-
-# Get file path (if backend supports it)
-path = image.path()
+# 6. Delete
+ticket.remove()
 ```
 
-**Class Methods**:
-- `ClassName.Get(id)` - Retrieve by ID
-- `ClassName.All()` - Iterate all
-- `ClassName.Count()` - Count objects
-- `ClassName.Has(id)` - Check existence
+### Class Methods
 
-**Instance Methods**:
-- `.meta(name, value)` - Get/set metadata
-- `.setMeta(**kwargs)` - Set multiple metadata fields
-- `.data(size)` - Stream data chunks
-- `.loadData()` - Load all data (use cautiously for large files)
-- `.path()` - Get filesystem path (backend-dependent)
-- `.save()` - Persist changes
+* `Model.Get(id)`: Retrieve an object by ID.
+* `Model.Has(id)`: Check if an object exists.
+* `Model.All(order=1)`: Iterator over all objects of this class.
+* `Model.Count()`: Total count of objects.
+* `Model.List(count=20, start=0, end=None)`: Paginated iterator.
+* `Model.OwnedBy(owner)`: Iterator of objects owned by `owner`.
+* `Model.GetByPublicID(publicId, partition)`: Retrieve object by human-facing sequence number.
+* `Model.Ensure(id)`: Retrieve existing or instantiate transient object with `id`.
+* `Model.Import(properties)`: Restore instance from dictionary export.
 
-### 3. Relations
+### Instance Methods
 
-**Purpose**: Link `StoredObject` instances to each other.
+* `obj.save()`: Persist changes to storage.
+* `obj.remove()`: Delete from storage and remove from cache.
+* `obj.export(depth=1)`: Serialize to primitive dictionary (depth 0=id/type, 1=properties+refs, 2=expanded relations).
+* `obj.update(dict)`: Update multiple properties at once.
+* `obj.getUpdateTime(property="id")`: Get timestamp of last modification.
+* `obj.hasOwner()` / `obj.getOwner()`: Access object owner.
 
-**Declaration**:
+---
+
+## Relations
+
+Relations represent managed links between `StoredObject` instances with lazy loading.
 
 ```python
 class Comment(StoredObject):
-	PROPERTIES = dict(
-		message=Types.STRING,
-		date=Types.DATE,
-	)
-	
-	RELATIONS = dict(
-		author=Account,  # Single relation
-		replies=[Comment],  # Many relation (list/tuple notation)
-	)
-```
-
-**Usage**:
-
-```python
-comment = Comment()
-comment.author = account  # Set single relation
-comment.replies.add(reply_comment)  # Add to many relation
-
-# Access
-author = comment.author.one()  # Get single related object
-for reply in comment.replies:  # Iterate many relation
-	print(reply.message)
-
-# Check membership
-if comment.replies.has(some_comment):
-	pass
-
-# Remove
-comment.replies.remove(some_comment)
-comment.replies.clear()
-```
-
-**Relation Methods**:
-- `.add(obj)` / `.append(obj)` - Add object to relation
-- `.remove(obj)` - Remove from relation
-- `.clear()` - Remove all
-- `.get(start, limit, resolve)` - Get with pagination
-- `.one(index)` - Get single item
-- `.has(obj_or_id)` - Check membership
-- `.list()` / `.all()` - Get all as iterator
-- `len(relation)` - Count items
-
-### 4. Types
-
-**Available Types**:
-
-```python
-Types.BOOL
-Types.INTEGER, Types.POSITIVE, Types.FLOAT, Types.NUMBER
-Types.STRING, Types.LINE, Types.EMAIL, Types.PASSWORD, Types.URL
-Types.HTML, Types.MARKDOWN, Types.RICHTEXT
-Types.DATE, Types.TIME, Types.DATETIME
-Types.BINARY
-Types.ANY
-
-# Composite types
-Types.LIST(Types.STRING)
-Types.TUPLE(Types.INTEGER, Types.STRING)
-Types.ONE_OF(Types.STRING, Types.INTEGER)
-Types.MAP(name=Types.STRING, age=Types.INTEGER)
-Types.ENUM("draft", "published", "archived")
-Types.REFERENCE(Account)  # Reference to another StoredObject
-Types.RANGE(0, 100, Types.INTEGER)
-```
-
-### 5. Indexing
-
-**Purpose**: Enable efficient lookups by property values.
-
-**Declaration**:
-
-```python
-from storage.index import Indexing, Indexes
+	PROPERTIES = dict(body=Types.STRING)
 
 class Article(StoredObject):
-	PROPERTIES = {
-		"title": Types.STRING,
-		"author": Types.STRING,
-		"content": Types.STRING,
-		"date": Types.STRING,
-		"status": Types.STRING,
-	}
-	
-	INDEX_BY = dict(
-		# Simple normalization
-		date=Indexing.Normalize,
-		
-		# Extract keywords from multiple fields
-		keywords=lambda name, obj: Indexing.Keywords(
-			(obj.title, obj.author, obj.content)
-		),
+	PROPERTIES = dict(title=Types.STRING)
+	RELATIONS = dict(
+		author=User,         # Single relation
+		comments=[Comment],  # Many relation (list syntax)
 	)
 ```
 
-**Indexing Functions**:
-- `Indexing.Value` - Pass-through
-- `Indexing.Normalize` - Lowercase, strip, normalize spaces
-- `Indexing.NoAccents` - Remove accents
-- `Indexing.Keyword` - Single keyword normalization
-- `Indexing.Keywords(values, minLength=3)` - Extract multiple keywords
-- `Indexing.UpdateTime` - Index by update timestamp
-- `Indexing.Paths(separator)` - Index hierarchical paths
-
-**Setup and Usage**:
+### Working with Relations
 
 ```python
-from storage.backends.dbm import DBMBackend
+article = Article(title="Hello World").save()
+comment = Comment(body="Great read!").save()
 
-# Create indexes manager
-indexes = Indexes(DBMBackend, "Data/").use(Article, Account)
+# Single relation
+article.author = alice
+article.save()
+print(article.author.one().name)
 
-# Access indexes via shortcuts
-articles_by_date = indexes.Article.by.date
+# Many relation
+article.comments.add(comment)
+article.comments.append(another_comment)
 
-# Query
-for article in articles_by_date("2025-01-15"):
+# Iteration & querying
+for c in article.comments:
+	print(c.body)
+
+# Membership & counts
+print("Total comments:", len(article.comments))
+if article.comments.has(comment):
+	print("Comment found")
+
+# Removal
+article.comments.remove(comment)
+article.comments.clear()
+```
+
+### Relation API
+
+* `.add(obj)` / `.append(obj)`: Append object reference.
+* `.prepend(obj)` / `.insert(index, obj)`: Insert object reference.
+* `.remove(obj)`: Remove specific object.
+* `.delete(index)`: Remove item by position.
+* `.clear()`: Clear all related items.
+* `.one(index=0)`: Resolve and return a single related object.
+* `.get(start=0, limit=None, resolve=True)`: Paginated resolution.
+* `.list()` / `.all()`: Iterator over all related instances.
+* `.has(obj_or_id)`: Check membership.
+* `len(relation)`: Count related items.
+
+---
+
+## Binary & File Storage (`StoredRaw` & `RawStorage`)
+
+`StoredRaw` stores binary payloads (images, documents, archives) with metadata dictionaries and data streaming.
+
+```python
+from storage import DirectoryBackend
+from storage.raw import RawStorage, StoredRaw
+
+class Document(StoredRaw):
+	ID_PREFIX = "DOC"
+
+raw_storage = RawStorage(DirectoryBackend("Data/")).use(Document)
+
+# Save file with metadata
+with open("report.pdf", "rb") as f:
+	data = f.read()
+
+doc = Document(data=data, filename="report.pdf", mimeType="application/pdf")
+doc.save()
+
+# Retrieve and stream data
+loaded = Document.Get(doc.id)
+print("Filename:", loaded.meta("filename"))
+
+for chunk in loaded.data(size=64 * 1024):
+	process_chunk(chunk)
+
+# Filesystem path (if supported by backend)
+local_path = loaded.path()
+```
+
+### Methods
+
+* `doc.meta(name=None, value=None)`: Get or set metadata properties.
+* `doc.setMeta(**kwargs)`: Update multiple metadata fields.
+* `doc.data(size=None)`: Stream binary chunks without loading entire file into memory.
+* `doc.loadData()`: Load complete byte array.
+* `doc.path()`: Direct filesystem path (available on `DirectoryBackend`).
+
+---
+
+## Monotone Metric Storage (`StoredMetric` & `MetricStorage`)
+
+`StoredMetric` provides append-only time-series metric storage.
+
+```python
+from storage.metrics import MetricStorage, MetricsDirectoryBackend, StoredMetric
+
+metric_storage = MetricStorage(MetricsDirectoryBackend("Data/metrics"))
+
+# Record metrics
+metric_storage.add(StoredMetric("api.requests", 1, meta={"route": "/items"}))
+metric_storage.add(StoredMetric("cpu.load", 0.42, timestamp=1710000000))
+
+# Query by time range
+for sample in metric_storage.get("cpu.load", after=1709990000, before=1710010000):
+	print(sample.timestamp, sample.value)
+```
+
+---
+
+## Key-Value Storage (`KVStorage`)
+
+`KVStorage` provides a typed, prefixed key-value store with pluggable codecs and normalizers.
+
+```python
+from storage.backends.sqlite import KVSqliteBackend
+from storage.formats import JSONCodec
+from storage.kv import KVStorage, PathKVKeyNormalizer, StringKVKeyNormalizer
+
+# String-keyed KV store with JSON codec
+kv = KVStorage(
+	KVSqliteBackend("Data/kv.sqlite3"),
+	prefix="settings:",
+	normalizer=StringKVKeyNormalizer(),
+	codec=JSONCodec(),
+)
+
+# Single operations
+kv.set("theme", {"dark": True, "fontSize": 14})
+settings = kv.get("theme")
+has_theme = kv.has("theme")
+kv.delete("theme")
+
+# Batch operations
+kv.setm({"a": 1, "b": 2})
+results = kv.getm(["a", "b"])
+
+# Key iteration
+for key in kv.ilist(prefix="user:"):
+	print(key)
+
+# Key-Value pair iteration
+for key, value in kv.iitems():
+	print(key, value)
+```
+
+### Normalizers
+
+* `StringKVKeyNormalizer`: Plain string keys (`"user:123"`).
+* `PathKVKeyNormalizer`: Path components (`["data", "2025", "report.json"]`).
+* `TupleKVKeyNormalizer`: Tuple keys (`("tenant", "user", "id")`).
+
+---
+
+## Type System (`Types`)
+
+| Category | Type Tag | Description |
+| :--- | :--- | :--- |
+| **Primitives** | `Types.BOOL` | Boolean value |
+| | `Types.INTEGER` / `Types.POSITIVE` | Signed integer / integer > 0 |
+| | `Types.FLOAT` / `Types.NUMBER` | Floating-point / general number |
+| | `Types.DATE` / `Types.TIME` / `Types.DATETIME` | Time values |
+| | `Types.BINARY` | Raw bytes |
+| | `Types.ANY` / `Types.THIS` | Any primitive / Self reference |
+| **Strings** | `Types.STRING` / `Types.LINE` | General string / single-line string |
+| | `Types.EMAIL` / `Types.PASSWORD` / `Types.URL` | Validated string subtypes |
+| | `Types.HTML` / `Types.MARKDOWN` / `Types.RICHTEXT`| Formatted text |
+| | `Types.PATH` / `Types.ID` | Path / Identifier string |
+| **Composites** | `Types.LIST(type)` | Homogeneous list, e.g. `Types.LIST(Types.STRING)` |
+| | `Types.TUPLE(*types)` | Fixed tuple, e.g. `Types.TUPLE(Types.INT, Types.STRING)` |
+| | `Types.ONE_OF(*types)` | Union type, e.g. `Types.ONE_OF(Types.INT, Types.STRING)` |
+| | `Types.MAP(**spec)` | Keyed map, e.g. `Types.MAP(lat=Types.FLOAT, lng=Types.FLOAT)` |
+| | `Types.ENUM(*values)` | Enumeration, e.g. `Types.ENUM("open", "closed")` |
+| | `Types.REFERENCE(Model)` | StoredObject reference |
+| | `Types.RANGE(min, max, type)` | Value bounds, e.g. `Types.RANGE(0, 100)` |
+
+---
+
+## Indexing (`Indexing` & `Indexes`)
+
+Indexes enable fast object lookups by property value.
+
+```python
+from storage.backends.sqlite import SQLiteBackend
+from storage.index import Indexes, Indexing
+
+class Article(StoredObject):
+	PROPERTIES = dict(
+		title=Types.STRING,
+		category=Types.STRING,
+		tags=Types.LIST(Types.STRING),
+	)
+	INDEX_BY = dict(
+		category=Indexing.Normalize,
+		tags=lambda name, obj: Indexing.Keywords(obj.tags),
+	)
+
+# Register indexes with backend
+indexes = Indexes(SQLiteBackend, "Data/indexes").use(Article)
+
+# Query by index
+for article in indexes.Article.by.category("engineering"):
 	print(article.title)
 
-# Get one
-article = articles_by_date.one("2025-01-15")
-
-# Check existence
-if articles_by_date.has("2025-01-15"):
-	pass
+# Get single match
+first = indexes.Article.by.category.one("engineering")
 
 # Rebuild indexes
 indexes.rebuild(sync=True)
 ```
 
-**Index Methods**:
-- `.get(key, restore=True)` - Iterator of objects with key
-- `.one(key, index=0)` - Get single object
-- `.has(key)` - Check if key exists
-- `.count(key)` - Count objects for key
-- `.keys()` - List all index keys
-- `.list(start, end, count, order)` - Paginated list
+### Extraction Functions
 
-### 6. Backends
+* `Indexing.Value`: Pass-through exact value.
+* `Indexing.Normalize`: Lowercase, strip accents and normalize whitespace.
+* `Indexing.NoAccents`: Strip diacritics / accents.
+* `Indexing.Keyword` / `Indexing.Keywords(values)`: Tokenize and extract keywords.
+* `Indexing.Paths(separator="/")`: Index hierarchical subpaths.
+* `Indexing.UpdateTime`: Index modification timestamps.
 
-**Available Backends**:
+---
+
+## Storage Backends
+
+| Backend | Capabilities | Best Suited For |
+| :--- | :--- | :--- |
+| **`MemoryBackend`** / `KVMemoryBackend` | In-memory, fast, ephemeral | Unit tests, mock environments |
+| **`DirectoryBackend`** / `KVFileBackend` | Direct file-per-object, path access | Development, simple file storage |
+| **`DBMBackend`** | Key-value store via `dbm.ndbm` | Embedded single-file KV lookups |
+| **`SQLiteBackend`** / `KVSqliteBackend` | WAL mode, ordering, raw blobs, sequence tables | Production local-first, multi-process |
+| **`JournalBackend`** | Change log, snapshots, SSE pub/sub | Live sync, event sourcing, transaction replay |
+| **`MultiBackend`** | Multiplexes reads/writes across backends | Tiered storage, replication |
+
+---
+
+## Schema Evolution & Validation
+
+`storage.schema` automatically validates stored schemas on startup and triggers migrations when needed.
 
 ```python
-from storage.backends.memory import MemoryBackend
-from storage.backends.fs import DirectoryBackend
-from storage.backends.dbm import DBMBackend
+from storage.objects import ObjectStorage
+from storage.schema import SchemaValidator
 
-# Memory (ephemeral, for testing)
-backend = MemoryBackend()
-
-# Directory (file-per-object)
-backend = DirectoryBackend("path/to/data")
-
-# DBM (key-value database)
-backend = DBMBackend("path/to/db")
+# Validates schema and auto-runs pending migrations if covered
+storage = ObjectStorage(backend, validateSchema=True).use(User, Article)
 ```
 
-**Backend Operations**:
-- `.add(key, value)` - Create entry
-- `.update(key, value)` - Update entry
-- `.get(key)` - Retrieve value
-- `.has(key)` - Check existence
-- `.remove(key)` - Delete entry
-- `.keys(prefix)` - List keys
-- `.sync()` - Flush to disk
-- `.clear()` - Remove all data
+See [Storage Migrations Reference](ref-storage-migrations.md) for declarative migration authoring.
 
-### 7. Complete Application Pattern
+---
 
-**Recommended Structure**:
+## Complete Application Pattern
 
 ```python
-from storage import Types, DirectoryBackend, DBMBackend
-from storage.objects import StoredObject, ObjectStorage
-from storage.raw import StoredRaw, RawStorage
-from storage.index import Indexing, Indexes
+from storage import DirectoryBackend, Indexing, SQLiteBackend, Types
+from storage.index import Indexes
+from storage.kv import KVStorage, StringKVKeyNormalizer
+from storage.formats import JSONCodec
+from storage.migrations import MigrationOperator
+from storage.objects import ObjectStorage, StoredObject
+from storage.raw import RawStorage, StoredRaw
+from storage.web import StorageServer, http
 
-# 1. Define models
+# 1. Models
+@http("accounts")
 class Account(StoredObject):
 	PROPERTIES = dict(email=Types.EMAIL, name=Types.STRING)
 	INDEX_BY = dict(email=Indexing.Normalize)
 
-class File(StoredRaw):
-	"""Stores files"""
+@http("documents")
+class Document(StoredRaw):
+	pass
 
-class Article(StoredObject):
-	PROPERTIES = dict(
-		title=Types.STRING,
-		content=Types.STRING,
-		status=Types.ENUM("draft", "published"),
-	)
-	RELATIONS = dict(
-		author=Account,
-		attachments=[File],
-	)
-	INDEX_BY = dict(
-		status=Indexing.Normalize,
-		keywords=lambda n, obj: Indexing.Keywords((obj.title, obj.content)),
-	)
-
-# 2. Create unified interface
-class DataInterface:
-	def __init__(self, path="Data/"):
-		# Object storage
-		self.objects = ObjectStorage(DirectoryBackend(path)).use(
-			Account, Article
-		)
+# 2. Unified Application Data Interface
+class AppData:
+	def __init__(self, data_dir="Data"):
+		self.backend = SQLiteBackend(f"{data_dir}/db")
 		
-		# Raw storage
-		self.raw = RawStorage(DirectoryBackend(path)).use(File)
+		# Object & Raw Storage
+		self.objects = ObjectStorage(self.backend).use(Account)
+		self.raw = RawStorage(self.backend).use(Document)
+		
+		# Key-Value Cache
+		self.cache = KVStorage(
+			self.backend,
+			prefix="cache:",
+			normalizer=StringKVKeyNormalizer(),
+			codec=JSONCodec(),
+		)
 		
 		# Indexes
-		self.indexes = Indexes(DBMBackend, path).use(
-			Account, Article
-		)
-	
+		self.indexes = Indexes(SQLiteBackend, f"{data_dir}/idx").use(Account)
+		
+		# Web Server
+		self.server = StorageServer(prefix="/api", classes=[Account, Document])
+		self.server.useKV("cache", self.cache)
+
+	def migrate(self):
+		return MigrationOperator(self.objects).apply()
+
 	def sync(self):
-		"""Persist all changes"""
-		self.objects.sync()
-		self.raw.sync()
-		return True
-	
-	def reindex(self):
-		"""Rebuild all indexes"""
-		return self.indexes.rebuild(sync=True)
-
-# 3. Use the interface
-data = DataInterface("Data/")
-
-# Create account
-account = Account(properties={"email": "user@example.com", "name": "John"})
-account.save()
-
-# Create article
-article = Article(properties={
-	"title": "Hello World",
-	"content": "This is my first article",
-	"status": "draft",
-})
-article.author = account
-article.save()
-
-# Query by index
-for art in data.indexes.Article.by.status("published"):
-	print(art.title)
-
-# Search keywords
-for art in data.indexes.Article.by.keywords("hello"):
-	print(art.title)
-
-# Sync to disk
-data.sync()
+		self.backend.sync()
 ```
 
-## Key Patterns and Best Practices
+---
 
-### Property vs Metadata
-- **StoredObject**: Use typed `PROPERTIES` for structured data
-- **StoredRaw**: Use `.meta()` dictionary for flexible metadata
+## Best Practices & Guidelines
 
-### Relations vs References
-- **Relations** (RELATIONS): Managed collections, lazy loading
-- **Type.REFERENCE**: Just a type hint, stores as primitive
-
-### Saving Changes
-```python
-# StoredObject - call save() after modifications
-obj.name = "New Name"
-obj.save()
-
-# Or use context manager (auto-saves on exit)
-with storage:
-	obj = Account(properties={"email": "test@test.com"})
-# obj is automatically saved
-```
-
-### Exporting Data
-```python
-# Shallow export (id + type only)
-obj.export(depth=0)
-
-# Full export (all properties + relations as references)
-obj.export(depth=1)
-
-# Deep export (properties + expanded relations)
-obj.export(depth=2)
-```
-
-### Iteration Performance
-```python
-# Memory efficient - uses iterator
-for account in Account.All():
-	process(account)
-
-# Pagination
-for account in Account.List(count=10, start=0):
-	process(account)
-```
-
-### Thread Safety
-- Storage uses `threading.RLock` for thread-safe operations
-- Safe to use from multiple threads
-- Each storage maintains internal cache with weak references
-
-### Update Tracking
-```python
-# Every object tracks update times per property
-timestamp = obj.getUpdateTime("email")  # When email was last updated
-timestamp = obj.getUpdateTime("id")     # When object was last modified
-```
-
-## Common Gotchas
-
-1. **Must register with storage**: `ClassName.STORAGE` must be set before using class methods like `Get()`, `All()`
-
-2. **Save after modifications**: Changes are not auto-persisted, call `.save()`
-
-3. **Relations store references**: When exporting, relations export as `{id, type}` by default (shallow)
-
-4. **Indexes need rebuilding**: After bulk changes, call `indexes.rebuild()`
-
-5. **StoredRaw data streaming**: Use `.data()` for large files, not `.loadData()`
-
-6. **Collection names**: Objects stored as `ClassName.id`, customize with `COLLECTION` attribute
-
-7. **Reserved properties**: Cannot use `type`, `id`, `updates` as property names
-
-## Code Style (Per AGENTS.md)
-
-- Use **TABS** (size 4) for indentation
-- Type hints: Use `ClassVar`, `Optional`, `List`, `Type`, etc.
-- Naming: PascalCase for classes, camelCase for functions/variables
-- Class variables: Use `ClassVar` type hint
-- Error handling: Raise exceptions with descriptive messages
+1. **Explicit Registration**: Always register models with `.use(...)` before calling class methods like `.Get()` or `.All()`.
+2. **Explicit Persistence**: Modifications are not automatically saved unless using the `with storage:` context manager. Call `.save()` after changing properties.
+3. **Use Descriptors**: Declare properties in `PROPERTIES` and access them directly as attributes (`account.email`).
+4. **Shallow vs Deep Exports**: Use `export(depth=1)` for shallow reference exports and `export(depth=2)` to serialize related objects.
+5. **Reserved Property Names**: Do not use `type`, `id`, `owner`, `partition`, `revision`, or `updates` as model property names.
+6. **Thread Safety**: Storage backends and runtimes use `threading.RLock` and are safe for concurrent multithreaded access.

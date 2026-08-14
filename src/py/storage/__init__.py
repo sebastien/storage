@@ -6,6 +6,7 @@ from .kv import StringKVKeyNormalizer as StringKVKeyNormalizer
 from .kv import PathKVKeyNormalizer as PathKVKeyNormalizer
 from .kv import TupleKVKeyNormalizer as TupleKVKeyNormalizer
 from .objects import Ownership as Ownership
+from .objects import PublicID as PublicID
 from .backends.fs import DirectoryBackend as DirectoryBackend
 from .backends.fs import KVFileBackend as KVFileBackend
 from .backends.dbm import DBMBackend as DBMBackend

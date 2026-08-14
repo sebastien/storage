@@ -897,6 +897,7 @@ class StoredObjectBridge {
 		this.liveChannel = undefined
 		this.liveSource = undefined
 		this.liveReady = undefined
+		this.liveRecovery = undefined
 		this.liveHeartbeatTimer = undefined
 		this.liveSubscriptions = new Set()
 		this.liveObjects = new Map()
@@ -1222,6 +1223,9 @@ class StoredObjectBridge {
 		try {
 			return await this.request("POST", path, { commands })
 		} catch (error) {
+			if (error instanceof StorageBridgeError && error.status === 404) {
+				return await this.recoverLiveChannel()
+			}
 			this.liveCommandQueue = commands.concat(this.liveCommandQueue)
 			throw error
 		} finally {
@@ -1358,9 +1362,64 @@ class StoredObjectBridge {
 			return undefined
 		}
 		const path = this.liveChannel.heartbeat || `${this.livePath}/${this.liveChannel.id}/heartbeat`
-		const res = await this.request("POST", path)
-		this.scheduleLiveHeartbeat()
-		return res
+		try {
+			const res = await this.request("POST", path)
+			this.scheduleLiveHeartbeat()
+			return res
+		} catch (error) {
+			if (error instanceof StorageBridgeError && error.status === 404) {
+				return await this.recoverLiveChannel()
+			}
+			throw error
+		}
+	}
+
+	resetLiveChannel() {
+		if (this.liveSource) {
+			this.liveSource.close()
+			this.liveSource = undefined
+		}
+		if (this.liveCommandTimer !== undefined) {
+			clearTimeout(this.liveCommandTimer)
+			this.liveCommandTimer = undefined
+		}
+		if (this.liveHeartbeatTimer !== undefined) {
+			clearTimeout(this.liveHeartbeatTimer)
+			this.liveHeartbeatTimer = undefined
+		}
+		this.liveCommandQueue = []
+		this.liveChannel = undefined
+		this.liveReady = undefined
+		return this
+	}
+
+	async recoverLiveChannel() {
+		if (this.liveRecovery) {
+			return await this.liveRecovery
+		}
+		const pending = (async () => {
+			this.resetLiveChannel()
+			const channel = await this.connectLive()
+			const commands = []
+			for (const key of this.liveSubscriptions) {
+				const target = JSON.parse(key)
+				commands.push({
+					op: "subscribe",
+					target,
+					...(this.liveQueries.has(this.queryKey(target)) ? { snapshot: true } : {}),
+				})
+			}
+			this.sendLiveCommands(commands)
+			return channel
+		})()
+		this.liveRecovery = pending
+		try {
+			return await pending
+		} finally {
+			if (this.liveRecovery === pending) {
+				this.liveRecovery = undefined
+			}
+		}
 	}
 
 	dispose() {

@@ -1,6 +1,8 @@
 """Backend base classes and backend composition helpers."""
 
 import logging
+import threading
+from copy import deepcopy
 
 from ..core import NOTHING, Operation, asJSON, unJSON
 
@@ -79,6 +81,7 @@ class StorageBackend:
 	def __init__(self):
 		self._onPublish = []
 		self._subscribers = {}
+		self._publicIDLock = threading.RLock()
 
 	def onPublish(self, callback):
 		"""Adds a callback that will be invoked when the `publish` method
@@ -198,6 +201,54 @@ class StorageBackend:
 		"""Removes backend-owned metadata for `key`."""
 		raise NotImplementedError
 
+	def storePublicObject(self, key, scope, factory):
+		"""Allocates a scoped public ID and stores the data returned by `factory`.
+
+		Backends with transactional support should override this method. The
+		default is suitable only when callers serialize access to the backend.
+		"""
+		with self._publicIDLock:
+			publicIDs = self.getMetadata("__storage__.publicIDs", {}) or {}
+			oldPublicIDs = deepcopy(publicIDs)
+			state = dict(publicIDs.get(scope, {}))
+			publicID = int(state.get("next", 1))
+			state["next"] = publicID + 1
+			state.setdefault("objects", {})[str(publicID)] = key
+			publicIDs[scope] = state
+			data = factory(publicID)
+			oldData = self.get(key)
+			try:
+				self.add(key, data)
+				self.setMetadata("__storage__.publicIDs", publicIDs)
+			except Exception:
+				if oldData is None:
+					if self.has(key):
+						self.remove(key)
+				else:
+					self.update(key, oldData)
+				self.setMetadata("__storage__.publicIDs", oldPublicIDs)
+				raise
+			return publicID
+
+	def getPublicObjectKey(self, scope, publicID):
+		"""Returns the internal storage key for a scoped public ID, if any."""
+		publicIDs = self.getMetadata("__storage__.publicIDs", {}) or {}
+		return (publicIDs.get(scope, {}).get("objects", {}) or {}).get(str(publicID))
+
+	def removeObject(self, key):
+		"""Removes an object and its public-ID mapping."""
+		publicIDs = self.getMetadata("__storage__.publicIDs", {}) or {}
+		changed = False
+		for state in publicIDs.values():
+			objects = state.get("objects", {})
+			for publicID, objectKey in list(objects.items()):
+				if objectKey == key:
+					del objects[publicID]
+					changed = True
+		if changed:
+			self.setMetadata("__storage__.publicIDs", publicIDs)
+		return self.remove(key)
+
 	def path(self, key):
 		"""Returns the physical path of the file used to store
 		the key, if any."""
@@ -257,6 +308,7 @@ class MultiBackend(StorageBackend):
 	for instance)."""
 
 	def __init__(self, *backends):
+		super().__init__()
 		self.backends = backends
 		self._readBackend = None
 		self._fileBackend = None

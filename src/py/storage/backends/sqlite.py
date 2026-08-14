@@ -60,6 +60,20 @@ class SQLiteBackend(StorageBackend):
 				"updated INTEGER NOT NULL DEFAULT (unixepoch())"
 				")"
 			)
+			self.connection.execute(
+				"CREATE TABLE IF NOT EXISTS public_ids ("
+				"scope TEXT PRIMARY KEY, "
+				"next INTEGER NOT NULL"
+				")"
+			)
+			self.connection.execute(
+				"CREATE TABLE IF NOT EXISTS public_objects ("
+				"scope TEXT NOT NULL, "
+				"public_id INTEGER NOT NULL, "
+				"object_key TEXT NOT NULL, "
+				"PRIMARY KEY(scope, public_id)"
+				")"
+			)
 			self.connection.commit()
 			return True
 
@@ -129,6 +143,7 @@ class SQLiteBackend(StorageBackend):
 			self._connection().execute("DELETE FROM kv")
 			self._connection().execute("DELETE FROM raw")
 			self._connection().execute("DELETE FROM metadata")
+			self._connection().execute("DELETE FROM public_objects")
 			self._commit()
 		return self
 
@@ -221,6 +236,84 @@ class SQLiteBackend(StorageBackend):
 			else:
 				self._connection().execute("DELETE FROM metadata WHERE key = ?", (key,))
 			self._commit()
+		return self
+
+	def storePublicObject(self, key, scope, factory):
+		"""Atomically allocate, persist, and register a public object ID."""
+		with self.lock:
+			connection = self._connection()
+			transactionStarted = not connection.in_transaction
+			try:
+				if transactionStarted:
+					connection.execute("BEGIN IMMEDIATE")
+				else:
+					connection.execute("SAVEPOINT public_id_allocation")
+				connection.execute(
+					"INSERT INTO public_ids(scope, next) VALUES (?, 2) "
+					"ON CONFLICT(scope) DO UPDATE SET next=next + 1",
+					(scope,),
+				)
+				publicID = connection.execute(
+					"SELECT next - 1 FROM public_ids WHERE scope = ?", (scope,)
+				).fetchone()[0]
+				data = self._serialize(data=factory(publicID))
+				serializedKey = self._serialize(key=key)
+				connection.execute(
+					"INSERT INTO kv(key, data, updated) VALUES (?, ?, unixepoch()) "
+					"ON CONFLICT(key) DO UPDATE SET data=excluded.data, updated=unixepoch()",
+					(serializedKey, data),
+				)
+				connection.execute(
+					"INSERT INTO public_objects(scope, public_id, object_key) VALUES (?, ?, ?)",
+					(scope, publicID, serializedKey),
+				)
+				if transactionStarted:
+					connection.commit()
+				else:
+					connection.execute("RELEASE SAVEPOINT public_id_allocation")
+				return publicID
+			except Exception:
+				if transactionStarted:
+					connection.rollback()
+				else:
+					connection.execute("ROLLBACK TO SAVEPOINT public_id_allocation")
+					connection.execute("RELEASE SAVEPOINT public_id_allocation")
+				raise
+
+	def getPublicObjectKey(self, scope, publicID):
+		with self.lock:
+			row = self._connection().execute(
+				"SELECT object_key FROM public_objects WHERE scope = ? AND public_id = ?",
+				(scope, int(publicID)),
+			).fetchone()
+		return None if row is None else self._deserialize(key=row[0])
+
+	def removeObject(self, key):
+		"""Atomically remove an object and its public-ID mapping."""
+		serializedKey = self._serialize(key=key)
+		with self.lock:
+			connection = self._connection()
+			transactionStarted = not connection.in_transaction
+			try:
+				if transactionStarted:
+					connection.execute("BEGIN IMMEDIATE")
+				else:
+					connection.execute("SAVEPOINT public_id_removal")
+				connection.execute(
+					"DELETE FROM public_objects WHERE object_key = ?", (serializedKey,)
+				)
+				connection.execute("DELETE FROM kv WHERE key = ?", (serializedKey,))
+				if transactionStarted:
+					connection.commit()
+				else:
+					connection.execute("RELEASE SAVEPOINT public_id_removal")
+			except Exception:
+				if transactionStarted:
+					connection.rollback()
+				else:
+					connection.execute("ROLLBACK TO SAVEPOINT public_id_removal")
+					connection.execute("RELEASE SAVEPOINT public_id_removal")
+				raise
 		return self
 
 	def close(self) -> bool:

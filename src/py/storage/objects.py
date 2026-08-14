@@ -14,6 +14,7 @@ import threading
 import traceback
 import weakref
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable, ClassVar, Iterator, List, Optional, Self, Type
 
 from .backends import StorageBackend
@@ -81,6 +82,12 @@ class Ownership:
 	cascade: bool = False
 
 
+class PublicID(Enum):
+	"""Strategies for assigning human-facing object identifiers."""
+
+	Partition = "partition"
+
+
 # -----------------------------------------------------------------------------
 #
 # STORED OBJECT MODEL
@@ -115,6 +122,8 @@ class StoredObject(Storable):
 	OWNERSHIP: ClassVar[Optional[Ownership]] = None
 	RESERVED: ClassVar[list[str]] = ["type", "id", "owner", "partition", "revision", "updates"]
 	INDEXES: ClassVar[list[Index]] = []
+	PUBLIC_ID: ClassVar[Optional[PublicID]] = None
+	PUBLIC_ID_NAMESPACE: ClassVar[Optional[str]] = None
 
 	@classmethod
 	def Owns(cls, *, required: bool = True, cascade: bool = False) -> Ownership:
@@ -187,6 +196,24 @@ class StoredObject(Storable):
 		"""Generates a new object ID for this class"""
 		id = cls.ID_GENERATOR()
 		return f"{cls.ID_PREFIX}-{id}" if cls.ID_PREFIX else id
+
+	@classmethod
+	def HasPublicID(cls) -> bool:
+		"""Returns whether this class opts into public ID allocation."""
+		return cls.PUBLIC_ID is not None
+
+	@classmethod
+	def PublicIDScope(cls, partition: Any = NOTHING, owner: Any = NOTHING) -> str:
+		"""Returns the allocation scope for a public object reference."""
+		if cls.PUBLIC_ID is not PublicID.Partition:
+			raise ValueError(
+				f"{cls.__name__} does not define a supported public ID scope"
+			)
+		partition = cls.NormalizePartition(partition=partition, owner=owner)
+		if partition is None:
+			raise ValueError(f"{cls.__name__} requires a partition for public IDs")
+		namespace = cls.PUBLIC_ID_NAMESPACE or getCanonicalName(cls)
+		return asJSON([namespace, partition])
 
 	@classmethod
 	def PartitionBucket(cls, partition: Optional[Any] = None) -> str:
@@ -265,6 +292,19 @@ class StoredObject(Storable):
 		if id is None and key is None:
 			return None
 		return storage.get(cls.StorageKey(id, owner=owner, partition=partition) if key is None else key)
+
+	@classmethod
+	def GetByPublicID(
+		cls,
+		publicID: int,
+		owner: Optional[Any] = NOTHING,
+		partition: Optional[Any] = NOTHING,
+	) -> Optional["StoredObject"]:
+		"""Returns the object identified by a partition-scoped public ID."""
+		key = cls._ensureStorage().backend.getPublicObjectKey(
+			cls.PublicIDScope(partition=partition, owner=owner), publicID
+		)
+		return cls._ensureStorage().get(key) if key is not None else None
 
 	@classmethod
 	def Count(cls) -> int:
@@ -429,6 +469,11 @@ class StoredObject(Storable):
 			skipExtraProperties = self.SKIP_EXTRA_PROPERTIES
 		if id is None and properties:
 			id = properties.get("id")
+		publicID = kwargs.pop("publicId", None)
+		if properties and "publicId" in properties:
+			publicID = properties.pop("publicId")
+		if publicID is not None and not restored:
+			raise ValueError("publicId is assigned by storage and cannot be supplied")
 		owner = kwargs.pop("owner", NOTHING)
 		if properties and "owner" in properties and owner is NOTHING:
 			owner = properties.pop("owner")
@@ -445,6 +490,7 @@ class StoredObject(Storable):
 		if id is None:
 			id = self.GenerateID()
 		self.id = self.__class__.NormalizeID(id)
+		self._publicID = int(publicID) if publicID is not None else None
 		self.storage = self.STORAGE
 		if not self.__class__.HAS_DESCRIPTORS:
 			self.__class__._GenerateDescriptors(self)
@@ -726,6 +772,21 @@ class StoredObject(Storable):
 		"""Returns the key used to store this object in a storage."""
 		return self.__class__.StorageKey(self.id, partition=self.partition)
 
+	def getPublicID(self) -> Optional[int]:
+		return self._publicID
+
+	def _setPublicID(self, publicID: int) -> Self:
+		if not self.__class__.HasPublicID():
+			raise ValueError(f"{self.__class__.__name__} does not use public IDs")
+		if self._publicID is not None and self._publicID != publicID:
+			raise ValueError(f"Public ID is immutable for {self.__class__.__name__}:{self.id}")
+		if publicID <= 0:
+			raise ValueError(f"Public ID must be positive, got: {publicID}")
+		self._publicID = publicID
+		return self
+
+	publicId = property(getPublicID)
+
 	def setStorage(self, storage: "ObjectStorage") -> Self:
 		"""Sets the storage object associated with this object."""
 		# NOTE: For now we just expect the storage not to change... but maybe
@@ -804,6 +865,7 @@ class StoredObject(Storable):
 			state.setdefault("_partition", owner_id)
 		state.setdefault("_ownerID", None)
 		state.setdefault("_partition", None)
+		state.setdefault("_publicID", None)
 		state.setdefault("_allowPartitionChange", False)
 		self.__dict__.update(state)
 		self.__dict__["storage"] = self.STORAGE
@@ -840,6 +902,8 @@ class StoredObject(Storable):
 			"type": self.getTypeName(),
 			"revision": self._revision,
 		}
+		if self.publicId is not None:
+			res["publicId"] = self.publicId
 		if self.getPartition() is not None:
 			res["partition"] = asPrimitive(self.getPartition())
 		if self.getOwnership():
@@ -1287,15 +1351,29 @@ class ObjectStorage:
 		"""Sets the given value to the given key, storing it in cache. Note that
 		this does not store all referenced objects."""
 		self.lock.acquire()
+		allocatedPublicID = False
 		try:
 			# if True:
 			storedObject.validateOwnership()
 			key = storedObject.getStorageKey()
-			exported_object = self.serializeObjectExport(storedObject.export())
-			if creation:
-				self.backend.add(key, exported_object)
+			if storedObject.__class__.HasPublicID() and storedObject.publicId is None:
+				scope = storedObject.__class__.PublicIDScope(
+					partition=storedObject.partition
+				)
+
+				def exportPublicObject(publicID):
+					nonlocal allocatedPublicID
+					storedObject._setPublicID(publicID)
+					allocatedPublicID = True
+					return self.serializeObjectExport(storedObject.export())
+
+				self.backend.storePublicObject(key, scope, exportPublicObject)
 			else:
-				self.backend.update(key, exported_object)
+				exported_object = self.serializeObjectExport(storedObject.export())
+				if creation:
+					self.backend.add(key, exported_object)
+				else:
+					self.backend.update(key, exported_object)
 			try:
 				self._cache[key] = storedObject
 			except TypeError:
@@ -1307,6 +1385,8 @@ class ObjectStorage:
 		except Exception:
 			# We make sure to always release the lock here
 			self.lock.release()
+			if allocatedPublicID:
+				storedObject._publicID = None
 			exception_format = repr(traceback.format_exc()).split("\\n")
 			error_msg = "\n|".join(exception_format[:-1])
 			raise Exception(error_msg)
@@ -1410,6 +1490,8 @@ class ObjectStorage:
 			i += 1
 
 	def changeOwner(self, storedObject: StoredObject, owner: Optional[StoredObject]):
+		if storedObject.publicId is not None:
+			raise ValueError("Cannot change owner of an object with a public ID")
 		oldKey = storedObject.getStorageKey()
 		try:
 			storedObject._allowPartitionChange = True
@@ -1427,6 +1509,8 @@ class ObjectStorage:
 		return storedObject
 
 	def changePartition(self, storedObject: StoredObject, partition: Optional[Any]):
+		if storedObject.publicId is not None:
+			raise ValueError("Cannot change partition of an object with a public ID")
 		oldKey = storedObject.getStorageKey()
 		try:
 			storedObject._allowPartitionChange = True
@@ -1472,7 +1556,7 @@ class ObjectStorage:
 			for index in old_value.INDEXES or ():
 				index.remove(old_value)
 				index.save()
-		self.backend.remove(key)
+		self.backend.removeObject(key)
 		if old_value and isinstance(old_value, StoredObject):
 			old_value.onRemove()
 
@@ -1495,6 +1579,10 @@ class ObjectStorage:
 	def use(self, *classes):
 		"""Makes this storage register itself with the given classes."""
 		for c in classes:
+			if c.PUBLIC_ID is not None and not isinstance(c.PUBLIC_ID, PublicID):
+				raise ValueError(
+					f"PUBLIC_ID for {c.__name__} must be a PublicID strategy"
+				)
 			name = getCanonicalName(c)
 			c.STORAGE = self
 			if name not in self._declaredClasses:
@@ -1603,6 +1691,7 @@ class ObjectStorage:
 __all__ = [
 	"ObjectStorage",
 	"Ownership",
+	"PublicID",
 	"Property",
 	"Relation",
 	"StoredObject",

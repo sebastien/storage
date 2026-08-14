@@ -31,7 +31,19 @@ except ModuleNotFoundError:
 		PrefixedAttachment,
 	)
 from storage.core import Identifier
-import unittest, os, shutil, sys, json, gc
+from storage.migrations import Migration, MigrationContext
+from storage.objects import PublicID, StoredObject
+from storage import MemoryBackend, SQLiteBackend, Types
+import unittest, os, shutil, sys, json, gc, tempfile, threading
+
+
+class PublicTicket(StoredObject):
+	PUBLIC_ID = PublicID.Partition
+	PROPERTIES = dict(title=Types.STRING)
+
+
+class LegacyTicket(StoredObject):
+	PROPERTIES = dict(title=Types.STRING)
 
 
 class StoredObjectTest(unittest.TestCase):
@@ -182,6 +194,118 @@ class StoredObjectTest(unittest.TestCase):
 			str(task.getLocalID()) + ".json",
 		)
 		self.assertTrue(os.path.exists(owner_path))
+
+
+class PublicIDTest(unittest.TestCase):
+	def setUp(self):
+		self.directory = tempfile.TemporaryDirectory()
+		self.path = os.path.join(self.directory.name, "public-ids")
+		self.backend = SQLiteBackend(self.path)
+		self.objects = ObjectStorage(self.backend).use(PublicTicket, LegacyTicket)
+
+	def tearDown(self):
+		self.objects.release()
+		self.backend.close()
+		self.directory.cleanup()
+
+	def testPartitionScopedAllocationAndLookup(self):
+		first = PublicTicket(title="First", partition="project-a").save()
+		second = PublicTicket(title="Second", partition="project-a").save()
+		other = PublicTicket(title="Other", partition="project-b").save()
+
+		self.assertEqual(1, first.publicId)
+		self.assertEqual(2, second.publicId)
+		self.assertEqual(1, other.publicId)
+		self.assertIs(first, PublicTicket.GetByPublicID(1, partition="project-a"))
+		self.assertIs(other, PublicTicket.GetByPublicID(1, partition="project-b"))
+		self.assertEqual(1, first.export()["publicId"])
+
+	def testPublicIDCannotBeSuppliedOrChanged(self):
+		with self.assertRaisesRegex(ValueError, "publicId is assigned"):
+			PublicTicket(title="Invalid", partition="project-a", publicId=12)
+
+		ticket = PublicTicket(title="Valid", partition="project-a").save()
+		with self.assertRaisesRegex(ValueError, "Extra property 'publicId'"):
+			ticket.update(dict(publicId=12))
+
+	def testPublicIDPersistsAcrossStorageInstances(self):
+		ticket = PublicTicket(title="Persisted", partition="project-a").save()
+		self.objects.release()
+		self.backend.close()
+		self.backend = SQLiteBackend(self.path)
+		self.objects = ObjectStorage(self.backend).use(PublicTicket, LegacyTicket)
+
+		restored = PublicTicket.GetByPublicID(ticket.publicId, partition="project-a")
+		self.assertIsNotNone(restored)
+		self.assertEqual(ticket.id, restored.id)
+		self.assertEqual(ticket.publicId, restored.publicId)
+
+	def testMigrationBackfillsExistingObjects(self):
+		legacy = LegacyTicket(title="Legacy", partition="project-a").save()
+		LegacyTicket.PUBLIC_ID = PublicID.Partition
+		try:
+			context = MigrationContext(
+				self.objects,
+				self.backend,
+				Migration("001", "public_ids", "", "", ""),
+			)
+			context.each(LegacyTicket).publicIDs()
+			self.assertEqual(1, legacy.publicId)
+			self.assertIs(legacy, LegacyTicket.GetByPublicID(1, partition="project-a"))
+		finally:
+			LegacyTicket.PUBLIC_ID = None
+
+	def testSQLiteAllocationIsSafeAcrossConnections(self):
+		count = 12
+		results = []
+		lock = threading.Lock()
+
+		def allocate(index):
+			backend = SQLiteBackend(self.path)
+			try:
+				publicID = backend.storePublicObject(
+					f"public.{index}", "concurrent", lambda _: dict(index=index)
+				)
+				with lock:
+					results.append(publicID)
+			finally:
+				backend.close()
+
+		threads = [threading.Thread(target=allocate, args=(index,)) for index in range(count)]
+		for thread in threads:
+			thread.start()
+		for thread in threads:
+			thread.join()
+		self.assertEqual(list(range(1, count + 1)), sorted(results))
+
+	def testDeletionDoesNotReusePublicID(self):
+		first = PublicTicket(title="First", partition="project-a").save()
+		first.remove()
+		second = PublicTicket(title="Second", partition="project-a").save()
+
+		self.assertIsNone(PublicTicket.GetByPublicID(first.publicId, partition="project-a"))
+		self.assertEqual(first.publicId + 1, second.publicId)
+
+	def testPublicIDObjectsCannotChangePartition(self):
+		ticket = PublicTicket(title="Ticket", partition="project-a").save()
+		with self.assertRaisesRegex(ValueError, "Cannot change partition"):
+			self.objects.changePartition(ticket, "project-b")
+
+	def testClearRemovesMappingsAndPreservesPublicIDState(self):
+		first = PublicTicket(title="First", partition="project-a").save()
+		self.backend.clear()
+		second = PublicTicket(title="Second", partition="project-a").save()
+
+		self.assertEqual(2, second.publicId)
+		self.assertIsNone(PublicTicket.GetByPublicID(first.publicId, partition="project-a"))
+
+	def testFallbackAllocationDoesNotAdvanceOnFactoryFailure(self):
+		backend = MemoryBackend()
+		with self.assertRaisesRegex(RuntimeError, "fail"):
+			backend.storePublicObject("object", "scope", lambda _: (_ for _ in ()).throw(RuntimeError("fail")))
+
+		self.assertFalse(backend.has("object"))
+		self.assertEqual({}, backend.getMetadata("__storage__.publicIDs", {}))
 
 
 if __name__ == "__main__":

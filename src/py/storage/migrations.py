@@ -122,6 +122,17 @@ class MigrationRunner:
 
 		return self.run(transform, operation="owner")
 
+	def publicIDs(self) -> "MigrationRunner":
+		"""Backfills storage-assigned public IDs for the selected classes."""
+		def transform(storedObject):
+			if not storedObject.__class__.HasPublicID() or storedObject.publicId is not None:
+				return False
+			# Saving an existing opt-in object allocates its public ID atomically.
+			storedObject.save()
+			return False
+
+		return self.run(transform, operation="publicIDs")
+
 
 class MigrationContext:
 	def __init__(self, storage, backend, migration: Migration):
