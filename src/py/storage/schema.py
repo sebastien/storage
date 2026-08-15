@@ -6,10 +6,22 @@ from typing import Any
 
 from .core import getCanonicalName
 from .migrations import MigrationOperator
-from .objects import Ownership, StoredObject
+from .objects import InverseRelation, Ownership, StoredObject
 
 SCHEMA_METADATA_KEY = "schema.objects"
 SCHEMA_VERSION = 1
+
+
+def _schemaClassPayload(schema: Any, className: Any) -> dict[str, Any]:
+	if schema is None:
+		return {}
+	if hasattr(schema, "export"):
+		schema = schema.export()
+	if isinstance(schema, dict) and "classes" in schema:
+		classes = schema.get("classes") or {}
+		if className in classes:
+			return deepcopy(classes[className])
+	return deepcopy(schema) if isinstance(schema, dict) else {}
 
 
 def _canonicalClassName(value: Any) -> str:
@@ -46,6 +58,8 @@ def _normalizeRelation(value: Any) -> dict[str, Any]:
 def _normalizeOwnership(value: Ownership | None) -> dict[str, Any] | None:
 	if value is None:
 		return None
+	if isinstance(value, dict):
+		return deepcopy(value)
 	return {
 		"owner": _canonicalClassName(value.ownerType),
 		"required": bool(value.required),
@@ -187,6 +201,7 @@ class Schema:
 				"relations": {
 					name: _normalizeRelation(value)
 					for name, value in list(relations.items())
+					if not isinstance(value, InverseRelation)
 				},
 				"ownership": _normalizeOwnership(ownership),
 				"indexes": [],
@@ -321,7 +336,9 @@ class Schema:
 		op = change.get("op")
 		className = change.get("class")
 		if op == "addClass":
-			self.classes[className] = change.get("schema", {})
+			self.classes[className] = _schemaClassPayload(
+				change.get("schema", {}), className
+			)
 			return self
 		if className not in self.classes:
 			raise RuntimeError(f"Migration change references unknown class: {className}")
@@ -370,6 +387,8 @@ class Schema:
 			}
 		elif op == "changeOwnership":
 			storedClass["ownership"] = deepcopy(change.get("to"))
+		elif op == "changeCollection":
+			storedClass["collection"] = change["to"]
 		else:
 			raise RuntimeError(f"Unsupported schema migration operation: {op}")
 		return self
@@ -403,7 +422,16 @@ class SchemaValidator:
 				self._store(merged)
 			return currentSchema
 		operator = MigrationOperator(self.storage)
-		simulated = storedSchema.clone()
+		reconciled = storedSchema.clone()
+		for migration in operator.list():
+			if migration.key not in operator.applied():
+				continue
+			for change in operator.getSchemaChanges(migration):
+				if not self._isChangeApplied(reconciled, change):
+					reconciled.applyChange(change)
+		if reconciled.export() != storedSchema.export():
+			self._store(reconciled)
+		simulated = reconciled.clone()
 		for migration in operator.pending():
 			changes = operator.getSchemaChanges(migration)
 			if changes:
@@ -418,6 +446,40 @@ class SchemaValidator:
 		operator.apply()
 		self._store(storedSchema.clone().update(currentSchema))
 		return currentSchema
+
+	def _isChangeApplied(self, schema: Schema, change: dict[str, Any]) -> bool:
+		change = _normalizeMigrationChange(change)
+		storedClass = schema.classes.get(change.get("class"))
+		op = change.get("op")
+		if op == "addClass":
+			return storedClass == _schemaClassPayload(
+				change.get("schema", {}), change.get("class")
+			)
+		if storedClass is None:
+			return False
+		properties = storedClass.get("properties", {})
+		relations = storedClass.get("relations", {})
+		if op == "addProperty":
+			return properties.get(change["name"]) == _normalizePropertyType(change["type"])
+		if op == "removeProperty":
+			return change["name"] not in properties
+		if op == "renameProperty":
+			return change["from"] not in properties and change["to"] in properties
+		if op == "splitProperty":
+			return change["from"] not in properties and all(name in properties for name in change["to"])
+		if op == "changePropertyType":
+			return properties.get(change["name"]) == _normalizePropertyType(change["to"])
+		if op == "addRelation":
+			return relations.get(change["name"]) == {"target": change["target"], "many": bool(change.get("many"))}
+		if op == "removeRelation":
+			return change["name"] not in relations
+		if op == "changeRelation":
+			return relations.get(change["name"]) == {"target": change["toTarget"], "many": bool(change.get("toMany"))}
+		if op == "changeOwnership":
+			return storedClass.get("ownership") == change.get("to")
+		if op == "changeCollection":
+			return storedClass.get("collection") == change["to"]
+		return False
 
 	def _store(self, schema: Schema):
 		self.backend.setMetadata(SCHEMA_METADATA_KEY, schema.export())

@@ -1,13 +1,19 @@
+import { Identifier, numcode } from "./identifier.js"
+
 const RESERVED_FIELDS = new Set(["id", "type", "revision", "updates"])
 const DEFAULT_PAGE_SIZE = 20
 const DEFAULT_AUTO_PUSH_DELAY = 500
 const DEFAULT_LIVE_COMMAND_DELAY = 200
+const DEFAULT_LIVE_RETRY_DELAY = 1000
+const DEFAULT_LIVE_RETRY_MAX_DELAY = 30000
 const DEFAULT_LIVE_HEARTBEAT = 30000
 
 const isSameJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const isScopedID = (value) => Array.isArray(value) && value.length === 2
 const scopedIDText = (value) =>
 	isScopedID(value) ? `${value[0]}:${value[1]}` : String(value)
+const ownerID = (value) => (isScopedID(value) ? value[0] : undefined)
+const localID = (value) => (isScopedID(value) ? value[1] : value)
 
 class StorageBridgeError extends Error {
 	constructor(message, response, body) {
@@ -367,7 +373,7 @@ class StoredRelation {
 			return this.values()
 		}
 		const values = await this.bridge.relationList(this.owner.routeType, this.owner.id, this.name, options)
-		if (this.isCachedQuery(options)) {
+		if (this.isCachedQuery(options) || options.refresh) {
 			this.applyValues(values, this.state.revision, "remote")
 			return this.values()
 		}
@@ -728,11 +734,16 @@ class StoredQuery {
 	}
 
 	async sync(options = {}) {
-		if (!this.bridge.live || !this.bridge.EventSource) {
-			throw new Error("StoredQuery.sync requires live EventSource support")
-		}
 		this.bridge.trackQuery(this)
 		if (this.state.loaded && !options.refresh) {
+			return this
+		}
+		if (!this.bridge.live || !this.bridge.EventSource) {
+			const values = await this.bridge.list(
+				this.type,
+				this.owner ? { owner: this.owner } : {},
+			)
+			this.applySnapshot({ values })
 			return this
 		}
 		const useSnapshot = options.snapshot !== false
@@ -783,7 +794,9 @@ class StoredQuery {
 
 	applySnapshot(data) {
 		const before = this.snapshot()
-		this.state.values = (data.values || []).map((_) => this.bridge.hydrate(_, this.type))
+		this.state.values = (data.values || []).map((_) =>
+			_ instanceof StoredObject ? _ : this.bridge.hydrate(_, this.type),
+		)
 		this.state.cursor = data.cursor
 		this.state.loaded = true
 		this.state.version += 1
@@ -875,11 +888,21 @@ class StoredQuery {
 	}
 
 	emitChange(before, change, direction) {
+		if (this.bridge._hold > 0) {
+			this._held = true
+			return this
+		}
 		const after = this.snapshot()
 		for (const callback of this.state.subscribers) {
 			callback(change, this, direction, before, after)
 		}
 		return this
+	}
+
+	flushHeld() {
+		if (!this._held) return this
+		this._held = false
+		return this.emitChange(this.snapshot(), { kind: "refresh" }, "local")
 	}
 }
 
@@ -888,11 +911,13 @@ class StoredObjectBridge {
 		this.objects = new Map()
 		this.types = new Map()
 		this.typeRoutes = new Map()
+		this.idPrefixes = options.idPrefixes || {}
 		this.pushQueue = new Map()
 		this.pushTimer = undefined
 		this.inflightRequests = new Map()
 		this.liveCommandQueue = []
 		this.liveCommandTimer = undefined
+		this.liveCommandRetryDelay = undefined
 		this.batchUnsupported = false
 		this.liveChannel = undefined
 		this.liveSource = undefined
@@ -902,6 +927,8 @@ class StoredObjectBridge {
 		this.liveSubscriptions = new Set()
 		this.liveObjects = new Map()
 		this.liveQueries = new Map()
+		this.queries = new Map()
+		this._hold = 0
 		this.liveDisposeHandler = undefined
 		this._options = undefined
 		this.setOptions(options)
@@ -920,10 +947,13 @@ class StoredObjectBridge {
 		this.autoPush = options.autoPush === undefined ? true : !!options.autoPush
 		this.autoPushDelay = options.autoPushDelay === undefined ? DEFAULT_AUTO_PUSH_DELAY : options.autoPushDelay
 		this.autoPushBatch = options.autoPushBatch === undefined ? true : !!options.autoPushBatch
+		this.idPrefixes = options.idPrefixes || this.idPrefixes || {}
 		this.commandPath = options.commandPath === undefined ? "commands" : options.commandPath
 		this.live = options.live === undefined ? true : !!options.live
 		this.livePath = options.livePath === undefined ? "channel" : options.livePath
 		this.liveCommandDelay = options.liveCommandDelay === undefined ? DEFAULT_LIVE_COMMAND_DELAY : options.liveCommandDelay
+		this.liveRetryDelay = options.liveRetryDelay === undefined ? DEFAULT_LIVE_RETRY_DELAY : options.liveRetryDelay
+		this.liveRetryMaxDelay = options.liveRetryMaxDelay === undefined ? DEFAULT_LIVE_RETRY_MAX_DELAY : options.liveRetryMaxDelay
 		this.liveHeartbeat = options.liveHeartbeat === undefined ? DEFAULT_LIVE_HEARTBEAT : options.liveHeartbeat
 		this.EventSource = options.EventSource || globalThis.EventSource
 		this._options = this.optionsSnapshot(options)
@@ -946,7 +976,31 @@ class StoredObjectBridge {
 	}
 
 	query(type, options = {}) {
-		return new StoredQuery(this, type, options)
+		const stored = new StoredQuery(this, type, options)
+		const key = stored.queryKey()
+		const existing = key ? this.queries.get(key) : undefined
+		if (existing) return existing
+		if (key) this.queries.set(key, stored)
+		return stored
+	}
+
+	resetQueries() {
+		this.queries.clear()
+		this.liveQueries.clear()
+		return this
+	}
+
+	hold() {
+		this._hold += 1
+		return this
+	}
+
+	release() {
+		this._hold = Math.max(0, this._hold - 1)
+		if (this._hold === 0) {
+			for (const query of this.queries.values()) query.flushHeld()
+		}
+		return this
 	}
 
 	object(type, id, data) {
@@ -1198,7 +1252,7 @@ class StoredObjectBridge {
 		return this
 	}
 
-	scheduleLiveCommands() {
+	scheduleLiveCommands(delay = this.liveCommandDelay) {
 		if (this.liveCommandTimer !== undefined) {
 			clearTimeout(this.liveCommandTimer)
 		}
@@ -1209,7 +1263,7 @@ class StoredObjectBridge {
 		this.liveCommandTimer = setTimeout(() => {
 			this.liveCommandTimer = undefined
 			this.flushLiveCommands().catch((error) => this.reportLiveError(error))
-		}, Math.max(0, this.liveCommandDelay))
+		}, Math.max(0, delay))
 		return this
 	}
 
@@ -1221,15 +1275,32 @@ class StoredObjectBridge {
 		this.liveCommandQueue = []
 		const path = this.liveChannel.commands || `${this.livePath}/${this.liveChannel.id}/commands`
 		try {
-			return await this.request("POST", path, { commands })
+			const result = await this.request("POST", path, { commands })
+			this.liveCommandRetryDelay = undefined
+			return result
 		} catch (error) {
 			if (error instanceof StorageBridgeError && error.status === 404) {
 				return await this.recoverLiveChannel()
 			}
+			if (
+				error instanceof StorageBridgeError &&
+				error.status >= 400 &&
+				error.status < 500 &&
+				error.status !== 429
+			) {
+				this.liveCommandRetryDelay = undefined
+				this.reportLiveError(error)
+				return undefined
+			}
 			this.liveCommandQueue = commands.concat(this.liveCommandQueue)
+			const delay = this.liveCommandRetryDelay === undefined
+				? this.liveRetryDelay
+				: Math.min(this.liveCommandRetryDelay * 2, this.liveRetryMaxDelay)
+			this.liveCommandRetryDelay = delay
+			this.scheduleLiveCommands(delay)
 			throw error
 		} finally {
-			if (this.liveCommandQueue.length) {
+			if (this.liveCommandQueue.length && this.liveCommandTimer === undefined) {
 				this.scheduleLiveCommands()
 			}
 		}
@@ -1388,6 +1459,7 @@ class StoredObjectBridge {
 			this.liveHeartbeatTimer = undefined
 		}
 		this.liveCommandQueue = []
+		this.liveCommandRetryDelay = undefined
 		this.liveChannel = undefined
 		this.liveReady = undefined
 		return this
@@ -1449,6 +1521,7 @@ class StoredObjectBridge {
 			this.liveCommandTimer = undefined
 		}
 		this.liveCommandQueue = []
+		this.liveCommandRetryDelay = undefined
 		const channel = this.liveChannel
 		this.liveChannel = undefined
 		this.liveReady = undefined
@@ -1618,6 +1691,111 @@ class StoredObjectBridge {
 		return await this.request("POST", this.commandPath, payload)
 	}
 
+	prepareCommands(commands, options = {}) {
+		const prefixes = options.prefixes || this.idPrefixes || {}
+		return (commands || []).map((command) => {
+			if (command?.op !== "create") {
+				return command
+			}
+			const prefix = command.prefix ?? prefixes[command.type]
+			const id =
+				command.id ??
+				command.fields?.id ??
+				Identifier.ID(prefix == null ? {} : { prefix })
+			const fields = { ...(command.fields || {}), id }
+			const next = { ...command, id, fields }
+			delete next.prefix
+			return next
+		})
+	}
+
+	async transact(commands, options = {}) {
+		const prepared = this.prepareCommands(commands, options)
+		if (!prepared.length) {
+			return { results: [], transaction: true }
+		}
+		this.hold()
+		try {
+			const response = await this.sendCommands(prepared, {
+				...options,
+				transaction: true,
+			})
+			this.applyCommandResults(prepared, response?.results ?? [])
+			return response
+		} finally {
+			this.release()
+		}
+	}
+
+	cachedQueries(type, data) {
+		const routeType = this.routeType(type)
+		const matches = []
+		for (const query of this.queries.values()) {
+			if (this.routeType(query.type) !== routeType) continue
+			if (this.queryMatchesDelta(query, data)) matches.push(query)
+		}
+		return matches
+	}
+
+	queryMatchesDelta(query, data) {
+		if (query.owner == null || query.owner === "") return true
+		if (data?.change === "removed") return true
+		const value = data?.value
+		const owner =
+			value && typeof value === "object" && !Array.isArray(value) && value.owner !== undefined
+				? value.owner
+				: ownerID(data?.id)
+		if (owner === undefined) return false
+		return scopedIDText(owner) === scopedIDText(query.owner)
+	}
+
+	applyQueryDelta(type, data) {
+		for (const query of this.cachedQueries(type, data)) query.applyDelta(data)
+		return this
+	}
+
+	applyCommandResults(commands, results) {
+		for (let index = 0; index < commands.length; index += 1) {
+			const command = commands[index]
+			const result = results[index]
+			if (!result?.ok || !command) continue
+			if (String(command.op ?? "").startsWith("relation.")) continue
+			const type = command.type ?? result.type
+			const id = result.id ?? result.value?.id ?? command.id
+			if (!type || !id) continue
+			if (command.op === "remove") {
+				this.applyQueryDelta(type, { change: "removed", type, id })
+				continue
+			}
+			const value = result.value
+			if (value && typeof value === "object" && !Array.isArray(value)) {
+				this.object(type, id).apply(value, "remote", {
+					acknowledged: command.fields ?? command,
+				})
+			} else if (command.fields) {
+				this.object(type, id).apply(command.fields, "remote", {
+					acknowledged: command.fields,
+				})
+			}
+			if (command.op === "create") {
+				this.applyQueryDelta(type, {
+					change: "added",
+					type,
+					id,
+					value,
+				})
+			} else if (command.op === "update") {
+				this.applyQueryDelta(type, {
+					change: "updated",
+					type,
+					id,
+					value,
+				})
+			}
+		}
+		return this
+	}
+
 	async pushObjectsIndividually(objects) {
 		const results = []
 		const errors = []
@@ -1641,7 +1819,9 @@ class StoredObjectBridge {
 		const start = options.start || 0
 		const count = options.count || DEFAULT_PAGE_SIZE
 		const end = options.end === undefined ? start + count : options.end
-		const data = await this.request("GET", `${this.typePath(type)}/list/${start}:${end}`)
+		const query =
+			options.owner !== undefined ? `?${this.queryString({ owner: options.owner })}` : ""
+		const data = await this.request("GET", `${this.typePath(type)}/list/${start}:${end}${query}`)
 		return {
 			start: data.start,
 			end: data.end,
@@ -1665,7 +1845,7 @@ class StoredObjectBridge {
 		let yielded = 0
 		while (yielded < limit) {
 			const end = Math.min(start + count, start + (limit - yielded))
-			const page = await this.page(type, { start, end, count })
+			const page = await this.page(type, { start, end, count, owner: options.owner })
 			for (const object of page.values) {
 				yield object
 				yielded += 1
@@ -1899,6 +2079,8 @@ class StoredObjectBridge {
 			live: options.live === undefined ? true : !!options.live,
 			livePath: options.livePath === undefined ? "channel" : options.livePath,
 			liveCommandDelay: options.liveCommandDelay === undefined ? DEFAULT_LIVE_COMMAND_DELAY : options.liveCommandDelay,
+			liveRetryDelay: options.liveRetryDelay === undefined ? DEFAULT_LIVE_RETRY_DELAY : options.liveRetryDelay,
+			liveRetryMaxDelay: options.liveRetryMaxDelay === undefined ? DEFAULT_LIVE_RETRY_MAX_DELAY : options.liveRetryMaxDelay,
 			liveHeartbeat: options.liveHeartbeat === undefined ? DEFAULT_LIVE_HEARTBEAT : options.liveHeartbeat,
 			EventSource: options.EventSource || globalThis.EventSource,
 		}
@@ -1940,6 +2122,12 @@ const ObjectStorageBridge = StoredObjectBridge
 
 export default bridge
 export {
+	Identifier,
+	isScopedID,
+	localID,
+	numcode,
+	ownerID,
+	scopedIDText,
 	StoredAttributes,
 	StoredQuery,
 	StoredObjectBridge,

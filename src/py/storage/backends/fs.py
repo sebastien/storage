@@ -86,7 +86,7 @@ class DirectoryBackend(StorageBackend):
 						continue
 					path = root + os.sep + f
 					key = self.pathToKey(self, path)
-					if prefix and not key.startswith(prefix):
+					if prefix and not self.matchesPrefix(key, prefix):
 						continue
 					yield key
 

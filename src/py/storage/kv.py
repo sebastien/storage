@@ -369,8 +369,8 @@ class KVStorage(Generic[K, V]):
 		storage_prefix = self.prefix
 		if prefix not in (None, ""):
 			storage_prefix = self.normalizer.join(self.prefix, self.normalizer.normalize(prefix))
-		for sk in self.backend.keys(storage_prefix):
-			if not sk.startswith(storage_prefix):
+		for sk in self.backend.keys():
+			if storage_prefix and not str(sk).startswith(storage_prefix):
 				continue
 			yield self.normalizer.unjoin(self.prefix, sk)
 

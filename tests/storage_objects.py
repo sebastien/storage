@@ -30,7 +30,7 @@ except ModuleNotFoundError:
 		PrefixedUser,
 		PrefixedAttachment,
 	)
-from storage.core import Identifier
+from storage.core import Identifier, Storable, getCanonicalName
 from storage.migrations import Migration, MigrationContext
 from storage.objects import PublicID, StoredObject
 from storage import MemoryBackend, SQLiteBackend, Types
@@ -194,6 +194,33 @@ class StoredObjectTest(unittest.TestCase):
 			str(task.getLocalID()) + ".json",
 		)
 		self.assertTrue(os.path.exists(owner_path))
+
+	def testCollectionPrefixDoesNotMatchLongerName(self):
+		class Meeting(StoredObject):
+			COLLECTION = "meeting"
+			PROPERTIES = dict(title=Types.STRING)
+
+		class MeetingTemplate(StoredObject):
+			COLLECTION = "meeting-template"
+			PROPERTIES = dict(name=Types.STRING)
+
+		for storedObjectClass in (Meeting, MeetingTemplate):
+			Storable.DECLARED_CLASSES.pop(getCanonicalName(storedObjectClass), None)
+			storedObjectClass.STORAGE = None
+		self.objects.use(Meeting, MeetingTemplate)
+		try:
+			Meeting(title="standup").save()
+			MeetingTemplate(name="weekly").save()
+			meetings = [self.objects.get(key) for key in self.objects.keys(Meeting)]
+			templates = [self.objects.get(key) for key in self.objects.keys(MeetingTemplate)]
+			self.assertEqual(["standup"], [item.title for item in meetings])
+			self.assertEqual(["weekly"], [item.name for item in templates])
+			self.assertEqual(1, self.objects.count(Meeting))
+			self.assertEqual(1, self.objects.count(MeetingTemplate))
+		finally:
+			for storedObjectClass in (Meeting, MeetingTemplate):
+				Storable.DECLARED_CLASSES.pop(getCanonicalName(storedObjectClass), None)
+				storedObjectClass.STORAGE = None
 
 
 class PublicIDTest(unittest.TestCase):

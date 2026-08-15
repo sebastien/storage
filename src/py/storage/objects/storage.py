@@ -419,11 +419,7 @@ class ObjectStorage:
 				self.remove(item)
 
 	def _matchesPrefix(self, key, prefix) -> bool:
-		if prefix is None:
-			return True
-		if isinstance(prefix, (tuple, list)):
-			return any(self._matchesPrefix(key, _) for _ in prefix)
-		return str(key).startswith(str(prefix))
+		return self.backend.matchesPrefix(key, prefix)
 
 	def export(self):
 		"""Exports all the objects in this storage. You should only use that

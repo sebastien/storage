@@ -327,11 +327,7 @@ class SQLiteBackend(StorageBackend):
 				return False
 
 	def _matchesPrefix(self, key, prefix):
-		if prefix is None:
-			return True
-		if isinstance(prefix, (tuple, list)):
-			return any(self._matchesPrefix(key, _) for _ in prefix)
-		return str(key).startswith(prefix)
+		return self.matchesPrefix(key, prefix)
 
 	def _rawKey(self, key, ext=None):
 		return key + (ext or "")
@@ -438,7 +434,7 @@ class KVSqliteBackend(StorageBackend):
 			rows = list(self._conn().execute(query))
 		prefix = collection[0] if isinstance(collection, (tuple, list)) and collection else collection
 		for row in rows:
-			if prefix is None or row[0].startswith(prefix):
+			if prefix is None or self.matchesPrefix(row[0], prefix):
 				yield row[0]
 
 	def count(self, key=None) -> int:

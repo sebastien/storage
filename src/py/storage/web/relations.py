@@ -51,7 +51,7 @@ class RelationWebMixin:
 		)
 		self.validateRelationRevision(storable, name, data)
 		changed = self.applyRelationOperation(relation, operation, data)
-		if changed:
+		if changed and not relation.isInverse():
 			storable.save()
 		if command.get("return") == "none":
 			return dict(ok=True, operation=operation)
@@ -156,7 +156,7 @@ class RelationWebMixin:
 			data = await request.loadParams()
 			relation = self.getStorableRelation(storable, name)
 			self.validateRelationRevision(storable, name, data)
-			if self.applyRelationOperation(relation, operation, data):
+			if self.applyRelationOperation(relation, operation, data) and not relation.isInverse():
 				storable.save()
 		except StorageWebError as error:
 			return self.storageError(
@@ -254,6 +254,14 @@ class RelationWebMixin:
 	def applyRelationOperation(self, relation, operation, data):
 		data = dict(data or {})
 		operation = str(operation or "")
+		if relation.isInverse() and operation not in {"set", "append", "remove", "clear"}:
+			raise StorageWebError(
+				"BADOP",
+				"Unsupported relation operation.",
+				"Inverse relations have no stored order; only membership operations are supported.",
+				received=dict(operation=operation),
+				expected='Use "set", "append", "remove", or "clear" on inverse relations.',
+			)
 		many_ops = {"append", "prepend", "insert", "delete", "remove", "swap", "move"}
 		if not relation.isMany() and operation in many_ops:
 			raise StorageWebError(

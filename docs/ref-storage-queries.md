@@ -195,7 +195,11 @@ console.log("Current members:", members.values())
 * `query.values()`: Returns the local array of hydrated `StoredObject` instances.
 * `query.sub(callback)`: Registers a listener receiving `(change, query, direction)`.
 * `query.unsub(callback)`: Removes a registered listener.
-* `await query.sync(options)`: Opens the SSE subscription and resolves after receiving the initial snapshot.
+* `await query.sync(options)`: When live SSE is available, opens the channel and resolves after the initial snapshot. When `live` is false, loads via HTTP `list()`. Owner-scoped queries pass `?owner=` and the server accepts it only when it matches the authenticated owner.
+* `bridge.query(type, options)`: Returns an identity-cached `StoredQuery`.
+* `bridge.resetQueries()`: Clears the query cache.
+* `bridge.hold()` / `bridge.release()`: Batch query notifications (used by `transact`).
+* `bridge.transact(commands)`: Posts a transactional command batch and applies results to cached queries.
 
 ---
 

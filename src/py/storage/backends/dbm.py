@@ -113,7 +113,9 @@ class DBMBackend(StorageBackend):
 		elif order == StorageBackend.ORDER_DESCENDING:
 			keys = sorted(keys, reverse=True)
 		for key in keys:
-			yield self._deserialize(key=self._rawKeyText(key))
+			decoded = self._deserialize(key=self._rawKeyText(key))
+			if self.matchesPrefix(decoded, collection):
+				yield decoded
 
 	def clear(self):
 		# TODO: Not very optimized
@@ -132,8 +134,9 @@ class DBMBackend(StorageBackend):
 			yield self._deserialize(data=data)
 
 	def count(self, key=None) -> int:
-		assert key is None, "Not implemented"
-		return len(tuple(self.keys())) if self.values is not None else 0
+		if self.values is None:
+			return 0
+		return len(tuple(self.keys(key)))
 
 	def getMetadata(self, key=None, default=None):
 		metadata = {}
@@ -164,12 +167,18 @@ class DBMBackend(StorageBackend):
 
 	def close(self) -> bool:
 		if self.values is not None:
-			self.sync()
-			self.values.close()
+			try:
+				self.sync()
+			except Exception:
+				pass
+			try:
+				if self.values is not None:
+					self.values.close()
+			except Exception:
+				pass
 			self.values = None
 			return True
-		else:
-			return False
+		return False
 
 	def __del__(self):
 		self.close()

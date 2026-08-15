@@ -228,6 +228,33 @@ article.comments.clear()
 * `.has(obj_or_id)`: Check membership.
 * `len(relation)`: Count related items.
 
+### Inverse relations
+
+`InverseRelation` is a parent-side view over a child foreign key. It is not stored on the parent. Lookup uses `INDEX_BY` on the child. HTTP `GET /api/{type}/{id}/relations/{name}` lists it. POST membership ops (`set`, `append`, `remove`, `clear`) write the child foreign key and do not save the parent. Ordered ops (`swap`, `move`, `prepend`, `insert`, `delete`) return `BADOP`.
+
+```python
+from storage.index import Indexes, Indexing
+from storage.objects import InverseRelation, StoredObject
+
+class Comment(StoredObject):
+	PROPERTIES = dict(articleId=Types.STRING, body=Types.STRING)
+	INDEX_BY = dict(articleId=Indexing.Value)
+
+class Article(StoredObject):
+	PROPERTIES = dict(title=Types.STRING)
+	RELATIONS = lambda _: dict(
+		comments=InverseRelation(Comment, "articleId"),
+	)
+
+Indexes(DirectoryBackend, "Data/").use(Article, Comment)
+article = Article(title="Hello").save()
+Comment(articleId=article.id, body="Nice").save()
+list(article.comments)  # the comment
+# GET /api/article/{article.id}/relations/comments
+```
+
+`article.comments.add(comment)` and `article.comments = [comment]` set `comment.articleId` and save the comment. HTTP `GET` with `target="web"` embeds the view; disk export does not.
+
 ---
 
 ## Binary & File Storage (`StoredRaw` & `RawStorage`)

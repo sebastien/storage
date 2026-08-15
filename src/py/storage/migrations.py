@@ -22,11 +22,17 @@ MIGRATION_RE = re.compile(r"^(?P<id>\d+)-(?P<name>[A-Za-z0-9_]+)\.py$")
 _MIGRATION_EXECUTION_DEPTH: ContextVar[int] = ContextVar(
 	"storage_migration_execution_depth", default=0
 )
+_MIGRATION_STORAGE: ContextVar[Any | None] = ContextVar("storage_migration_storage", default=None)
 
 
 def migrationExecutionActive() -> bool:
 	"""Return whether a migration callback is currently executing."""
 	return _MIGRATION_EXECUTION_DEPTH.get() > 0
+
+
+def activeMigrationStorage() -> Any | None:
+	"""Return the object storage currently executing migrations, if any."""
+	return _MIGRATION_STORAGE.get()
 
 
 @dataclass(frozen=True)
@@ -264,6 +270,14 @@ class _MigrationBuilder:
 			"to": ownerClass,
 		}
 
+	def collection(self, storedObjectClass, old: str, new: str) -> dict[str, Any]:
+		return {
+			"op": "changeCollection",
+			"class": storedObjectClass,
+			"from": old,
+			"to": new,
+		}
+
 
 migration = _MigrationBuilder()
 
@@ -309,7 +323,8 @@ class MigrationOperator:
 		if self.storage is None or self.backend is None:
 			raise RuntimeError("MigrationOperator.apply requires a storage or backend")
 		self.prepare()
-		token = _MIGRATION_EXECUTION_DEPTH.set(_MIGRATION_EXECUTION_DEPTH.get() + 1)
+		depthToken = _MIGRATION_EXECUTION_DEPTH.set(_MIGRATION_EXECUTION_DEPTH.get() + 1)
+		storageToken = _MIGRATION_STORAGE.set(self.storage)
 		try:
 			for migrationRecord in self.pending():
 				module = _loadMigrationModule(migrationRecord)
@@ -336,7 +351,8 @@ class MigrationOperator:
 				if hasattr(self.backend, "sync"):
 					self.backend.sync()
 		finally:
-			_MIGRATION_EXECUTION_DEPTH.reset(token)
+			_MIGRATION_STORAGE.reset(storageToken)
+			_MIGRATION_EXECUTION_DEPTH.reset(depthToken)
 		return self.records
 
 	def getSchemaChanges(self, migrationRecord: Migration) -> list[dict]:

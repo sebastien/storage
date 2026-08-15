@@ -38,8 +38,9 @@ class MemoryBackend(StorageBackend):
 		return list(self.values.values())
 
 	def count(self, key=None):
-		assert key is None, "Not implemented"
-		return len(self.values)
+		if key is None:
+			return len(self.values)
+		return len(list(self.keys(key)))
 
 	def keys(self, collection=None, order=StorageBackend.ORDER_NONE):
 		keys = list(self.values.keys())
@@ -48,7 +49,9 @@ class MemoryBackend(StorageBackend):
 		elif order == StorageBackend.ORDER_DESCENDING:
 			keys = sorted(keys, reverse=True)
 		for key in keys:
-			yield self._deserialize(key=key)
+			decoded = self._deserialize(key=key)
+			if self.matchesPrefix(decoded, collection):
+				yield decoded
 
 	def clear(self):
 		self.values = {}

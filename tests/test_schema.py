@@ -12,7 +12,7 @@ from storage import MemoryBackend, Types
 from storage.core import Storable, getCanonicalName
 from storage.migrations import MIGRATIONS_ENV_VAR
 from storage.objects import ObjectStorage, StoredObject
-from storage.schema import SCHEMA_METADATA_KEY, SchemaValidationError
+from storage.schema import SCHEMA_METADATA_KEY, Schema, SchemaValidationError, SchemaValidator
 
 
 def makeStoredObjectClass(name, **attributes):
@@ -191,6 +191,61 @@ class SchemaTest(unittest.TestCase):
 			ObjectStorage(backend).use(SchemaUserTo)
 
 		self.assertIn("lastName", str(error.exception))
+
+	def testAddClassSchemaInstanceExtractsClassDict(self):
+		SchemaUser = self.makeClass("SchemaUser", PROPERTIES=dict(name=Types.STRING))
+		current = Schema.FromClasses([SchemaUser])
+		empty = Schema()
+		className = self.className(SchemaUser)
+		empty.applyChange(
+			{"op": "addClass", "class": className, "schema": current}
+		)
+		self.assertEqual(
+			current.classes[className]["collection"],
+			empty.classes[className]["collection"],
+		)
+		self.assertEqual(
+			current.classes[className]["properties"],
+			empty.classes[className]["properties"],
+		)
+		validator = SchemaValidator(ObjectStorage(MemoryBackend()).use(SchemaUser))
+		self.assertTrue(
+			validator._isChangeApplied(
+				empty, {"op": "addClass", "class": className, "schema": current}
+			)
+		)
+
+	def testChangeCollectionMigration(self):
+		SchemaUserFrom = self.makeClass(
+			"SchemaUser", COLLECTION="users", PROPERTIES=dict(name=Types.STRING)
+		)
+		SchemaUserTo = self.makeClass(
+			"SchemaUser", COLLECTION="people", PROPERTIES=dict(name=Types.STRING)
+		)
+		backend = MemoryBackend()
+		ObjectStorage(backend).use(SchemaUserFrom)
+		self.replaceDeclaredClass(SchemaUserFrom)
+		self.writeMigration(
+			"1-change_collection.py",
+			f"""
+			from storage import migration
+			from {__name__} import makeStoredObjectClass
+
+			SchemaUser = makeStoredObjectClass("SchemaUser")
+
+			@migration(migration.collection(SchemaUser, "users", "people"))
+			def apply(m):
+				pass
+			""",
+		)
+
+		ObjectStorage(backend).use(SchemaUserTo)
+
+		metadata = backend.getMetadata(SCHEMA_METADATA_KEY)
+		self.assertEqual(
+			"people",
+			metadata["classes"][self.className(SchemaUserTo)]["collection"],
+		)
 
 
 if __name__ == "__main__":

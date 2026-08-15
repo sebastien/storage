@@ -229,14 +229,14 @@ Emitted for transactional command batches and blocked channel flushes:
 
 ## Command Endpoint (`POST /api/commands`)
 
-The command endpoint executes multiple mutating operations in a single request. When `"transaction": true` is specified, changes are applied atomically and SSE notifications are deferred until completion, emitting a single `batch` event per subscriber.
+The command endpoint executes multiple mutating operations in a single request. When `"transaction": true` is specified, SSE notifications are deferred until completion, emitting a single `batch` event per subscriber.
 
 ```json
 POST /api/commands
 {
   "transaction": true,
   "commands": [
-    {"op": "create", "type": "items", "fields": {"name": "Alpha"}},
+    {"op": "create", "type": "items", "id": "ITEM-client-1", "fields": {"name": "Alpha"}},
     {"op": "update", "type": "items", "id": "123", "fields": {"name": "Beta"}},
     {"op": "remove", "type": "items", "id": "789"},
     {"op": "relation.append", "type": "items", "id": "123", "relation": "tags", "values": [{"id": "7"}]},
@@ -245,9 +245,11 @@ POST /api/commands
 }
 ```
 
+`create` accepts a client-supplied `id` at the command root or in `fields`. Command-root `id` wins if both are set. Later commands in the same payload may reference that id (for example as a `noteId` or relation value). Client ids should use the same `Identifier.ID` shape as the backend (`[PREFIX-]time-node-rand`). `transaction: true` runs the list in one request and coalesces SSE into a single `batch` event; it does not roll back earlier writes if a later command fails.
+
 ### Supported Command Operations
 
-* `create`: Create a new object.
+* `create`: Create a new object. Optional `id` is used as the stored object id.
 * `update`: Update properties on an existing object.
 * `remove`: Delete an object.
 * `relation.*`: `relation.set`, `relation.append`, `relation.prepend`, `relation.insert`, `relation.delete`, `relation.remove`, `relation.swap`, `relation.move`, `relation.clear`.
@@ -265,13 +267,13 @@ For a class `WebItem` exposed at `items` with prefix `/api`:
 | `GET` | `/api/items/{id}` | JSON, `.md`, `.xml` | Retrieve object |
 | `POST` | `/api/items/{id}` | JSON | Update object properties |
 | `POST` | `/api/items/{id}/remove` | JSON | Delete object |
-| `GET` | `/api/items/list` | JSON, `.md`, `.xml` | List objects (default count 20) |
+| `GET` | `/api/items/list` | JSON, `.md`, `.xml` | List objects (default count 20). Owned types accept `?owner=` only when it matches the authenticated owner. |
 | `GET` | `/api/items/list/{start}:{end}` | JSON, `.md`, `.xml` | Paginated list of objects |
 | `GET`/`POST` | `/api/items/{id}/{method}` | JSON, `.md`, `.xml` (GET) | Invoke custom instance method |
 | `GET` | `/api/items/{id}/relations` | JSON, `.md`, `.xml` | List all relations for object |
 | `GET` | `/api/items/{id}/relations/{rel}/count` | JSON, `.md`, `.xml` | Count items in relation |
 | `GET` | `/api/items/{id}/relations/{rel}/list` | JSON, `.md`, `.xml` | Paginate relation items |
-| `POST` | `/api/items/{id}/relations/{rel}/{op}` | JSON | Mutate relation (`append`, `remove`, etc.) |
+| `POST` | `/api/items/{id}/relations/{rel}/{op}` | JSON | Mutate relation (`append`, `remove`, etc.). Inverse relations allow `set`/`append`/`remove`/`clear` (write the child FK) and reject ordered ops. |
 | `GET` | `/api/blobs/{id}/data` | Binary stream | Stream raw file data (`StoredRaw`) |
 | `POST` | `/api/commands` | JSON | Batch / transactional command execution |
 | `POST` | `/api/channel` | JSON | Open real-time SSE channel |

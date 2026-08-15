@@ -122,8 +122,47 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 		data["owner"] = owner
 		return data, owner
 
+	def listOwner(self, request, storableClass):
+		auth = self.resolvedOwner(request, storableClass)
+		requested = request.param("owner")
+		if requested in (None, ""):
+			return auth
+		ownership = (
+			storableClass.GetOwnership()
+			if hasattr(storableClass, "GetOwnership")
+			else None
+		)
+		if not ownership:
+			raise StorageWebError(
+				"BADQUERY",
+				"Owner filter is not supported.",
+				"The requested type does not declare OWNERSHIP.",
+				received=dict(owner=requested),
+				expected="Omit the owner query parameter for types without OWNERSHIP.",
+				status=400,
+			)
+		if not self.isScoped(auth):
+			raise StorageWebError(
+				"FORBIDDEN",
+				"Owner filter requires authentication.",
+				"Listing by owner is only allowed when the request is scoped to that owner.",
+				received=dict(owner=requested),
+				expected="An authenticated owner matching the requested owner.",
+				status=403,
+			)
+		if str(requested) != str(auth):
+			raise StorageWebError(
+				"FORBIDDEN",
+				"Owner filter does not match the authenticated owner.",
+				"The owner query parameter must match the request owner.",
+				received=dict(owner=requested),
+				expected=dict(owner=str(auth)),
+				status=403,
+			)
+		return auth
+
 	def scopedList(self, request, storableClass, start=0, end=None):
-		owner = self.resolvedOwner(request, storableClass)
+		owner = self.listOwner(request, storableClass)
 		values = (
 			storableClass.OwnedBy(owner)
 			if self.isScoped(owner)
@@ -368,6 +407,10 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 		match = self.commandMatch(command.get("type"))
 		storableClass, info = match
 		fields = command.get("fields")
+		sid = command.get("id")
+		if sid is not None:
+			fields = dict(fields or {})
+			fields["id"] = sid
 		fields, owner = self.applyScopedOwner(request, storableClass, fields)
 		if fields is not None:
 			self.validateUpdatePayload(fields, dict(type=info.getName(), index=index))
@@ -942,15 +985,23 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 		return request.returns(method(*args, **kwargs))
 
 	def onStorableList(self, storableClass, info, request, start=0, end=None, format=None):
-		options = info.getExportOptions()
-		if end is None:
-			end = start + self.LIST_COUNT
-		res = [_.export(**options) for _ in self.scopedList(request, storableClass, start=start, end=end)]
-		return self.respondFormatted(
-			request,
-			self.toPublicValue(dict(start=start, end=end, count=len(res), values=res), request),
-			format=format,
-		)
+		try:
+			options = info.getExportOptions()
+			if end is None:
+				end = start + self.LIST_COUNT
+			res = [
+				_.export(**options)
+				for _ in self.scopedList(request, storableClass, start=start, end=end)
+			]
+			return self.respondFormatted(
+				request,
+				self.toPublicValue(
+					dict(start=start, end=end, count=len(res), values=res), request
+				),
+				format=format,
+			)
+		except StorageWebError as error:
+			return self.storageError(request, error, dict(type=info.getName()))
 
 	def intParam(self, request, name, default=None):
 		value = request.param(name)

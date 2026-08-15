@@ -15,7 +15,8 @@ from storage import (
 	StringKVKeyNormalizer,
 )
 from storage.formats import JSONCodec
-from storage.objects import ObjectStorage, StoredObject
+from storage.index import Indexes, Indexing
+from storage.objects import InverseRelation, ObjectStorage, StoredObject
 from storage.raw import RawStorage, StoredRaw
 from storage.web import StorageServer, http
 
@@ -61,15 +62,35 @@ class WebMember(StoredObject):
 	PROPERTIES = dict(value=Types.STRING)
 
 
+@http("comments")
+class WebComment(StoredObject):
+	PROPERTIES = dict(articleId=Types.STRING, body=Types.STRING)
+	INDEX_BY = dict(articleId=Indexing.Value)
+
+
+@http("articles")
+class WebArticle(StoredObject):
+	PROPERTIES = dict(title=Types.STRING)
+	RELATIONS = lambda _: dict(comments=InverseRelation(WebComment, "articleId"))
+
+
 class StorageWebTest(unittest.TestCase):
 	def setUp(self):
+		WebComment.INDEXES = []
+		WebComment.INDEX_FOR = {}
+		WebComment.STORAGE = None
+		WebArticle.STORAGE = None
 		self.path = tempfile.mkdtemp(prefix="storage-web-")
 		self.objects = ObjectStorage(DirectoryBackend(self.path)).use(
-			WebItem, WebTag, WebOwner, WebMember
+			WebItem, WebTag, WebOwner, WebMember, WebArticle, WebComment
+		)
+		self.indexes = Indexes(DirectoryBackend, self.path).use(
+			WebArticle, WebComment
 		)
 		self.raw = RawStorage(DirectoryBackend(self.path)).use(WebBlob)
 		self.server = StorageServer(
-			prefix="/api", classes=(WebItem, WebTag, WebBlob, WebOwner, WebMember)
+			prefix="/api",
+			classes=(WebItem, WebTag, WebBlob, WebOwner, WebMember, WebArticle, WebComment),
 		)
 		self.kv = KVStorage(
 			MemoryBackend(),
@@ -556,6 +577,32 @@ class StorageWebTest(unittest.TestCase):
 		self.assertEqual("gamma", WebItem.Get(item.id).value)
 		self.assertFalse(WebTag.Has(created_id))
 
+	def testCreateCommandHonorsTopLevelId(self):
+		created_id = "tag-top-level"
+		response, payload = self.requestJSON(
+			"POST",
+			"/api/commands",
+			body=json.dumps(
+				{
+					"transaction": True,
+					"commands": [
+						{
+							"op": "create",
+							"type": "tags",
+							"id": created_id,
+							"fields": {"label": "navy"},
+						}
+					],
+				}
+			),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertTrue(payload["results"][0]["ok"])
+		self.assertEqual(created_id, payload["results"][0]["id"])
+		self.assertTrue(WebTag.Has(created_id))
+		self.assertEqual("navy", WebTag.Get(created_id).label)
+
 	def testTransactionalCommandsEmitSingleBatchEvent(self):
 		self.objects.release()
 		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(WebItem, WebTag)
@@ -852,6 +899,99 @@ class StorageWebTest(unittest.TestCase):
 				await stream.aclose()
 
 		asyncio.run(run())
+
+	def testCreateCommandRootIdWinsOverFieldsId(self):
+		response, payload = self.requestJSON(
+			"POST",
+			"/api/commands",
+			body=json.dumps(
+				{
+					"transaction": True,
+					"commands": [
+						{
+							"op": "create",
+							"type": "tags",
+							"id": "tag-root",
+							"fields": {"id": "tag-fields", "label": "navy"},
+						}
+					],
+				}
+			),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual("tag-root", payload["results"][0]["id"])
+		self.assertTrue(WebTag.Has("tag-root"))
+		self.assertFalse(WebTag.Has("tag-fields"))
+
+	def testOwnerListRequiresMatchingAuth(self):
+		owner = WebOwner(name="Ada").save()
+		other = WebOwner(name="Bob").save()
+		member = WebMember(value="a", owner=owner).save()
+		WebMember(value="b", owner=other).save()
+		response, payload = self.requestJSON(
+			"GET", f"/api/members/list?owner={owner.id}"
+		)
+		self.assertEqual(response.status, 403)
+		self.server.inferOwner = lambda request, storableClass: owner.id
+		try:
+			response, listed = self.requestJSON(
+				"GET", f"/api/members/list?owner={owner.id}"
+			)
+			self.assertEqual(response.status, 200)
+			self.assertEqual([member.id], [item["id"] for item in listed["values"]])
+			response, forbidden = self.requestJSON(
+				"GET", f"/api/members/list?owner={other.id}"
+			)
+			self.assertEqual(response.status, 403)
+			response, unowned = self.requestJSON("GET", "/api/items/list?owner=x")
+			self.assertEqual(response.status, 400)
+		finally:
+			del self.server.inferOwner
+
+	def testInverseRelationHttpMembership(self):
+		article = WebArticle(title="Hello").save()
+		comment = WebComment(body="Nice").save()
+		response, page = self.requestJSON(
+			"GET", f"/api/articles/{article.id}/relations/comments"
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual(0, page["total"])
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/articles/{article.id}/relations/comments/append",
+			body=json.dumps(
+				{"values": [{"id": comment.id, "type": comment.getTypeName()}]}
+			),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual(1, page["total"])
+		self.assertEqual(article.id, WebComment.Get(comment.id).articleId)
+		response, page = self.requestJSON(
+			"GET", f"/api/articles/{article.id}/relations/comments/list"
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual([comment.id], [item["id"] for item in page["values"]])
+		response, error = self.requestJSON(
+			"POST",
+			f"/api/articles/{article.id}/relations/comments/swap",
+			body=json.dumps({"a": 0, "b": 0}),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 400)
+		self.assertEqual("BADOP", error["errno"])
+		response, page = self.requestJSON(
+			"POST",
+			f"/api/articles/{article.id}/relations/comments/remove",
+			body=json.dumps(
+				{"values": [{"id": comment.id, "type": comment.getTypeName()}]}
+			),
+			headers={"Content-Type": "application/json"},
+		)
+		self.assertEqual(response.status, 200)
+		self.assertEqual(0, page["total"])
+		self.assertIsNone(WebComment.Get(comment.id).articleId)
 
 
 if __name__ == "__main__":

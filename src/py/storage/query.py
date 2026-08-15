@@ -7,6 +7,7 @@ object journal entries.
 
 from typing import Any, Optional, Type
 
+from .backends.base import StorageBackend
 from .objects import StoredObject
 
 
@@ -76,7 +77,7 @@ class StoredQuery:
 	def eventFor(self, entry: dict, backend=None):
 		operation = entry.get("operation")
 		key = entry.get("key")
-		if key is None or not str(key).startswith(self.prefix()):
+		if key is None or not StorageBackend.matchesPrefix(key, self.prefix()):
 			return None
 		change = {
 			"=": "added",

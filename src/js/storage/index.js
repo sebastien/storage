@@ -1,5 +1,11 @@
 import objectBridge, {
+	Identifier,
+	isScopedID,
+	localID,
+	numcode,
 	ObjectStorageBridge,
+	ownerID,
+	scopedIDText,
 	StorageBridge as BaseStorageBridge,
 	StorageBridgeError,
 	StoredAttributes,
@@ -241,6 +247,12 @@ bridge.legacy = objectBridge
 
 export default bridge
 export {
+	Identifier,
+	isScopedID,
+	localID,
+	numcode,
+	ownerID,
+	scopedIDText,
 	StorageBridge,
 	ObjectStorageBridge,
 	KVStorageBridge,

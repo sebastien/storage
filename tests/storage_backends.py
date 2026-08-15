@@ -402,6 +402,15 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 			self.assertIn("key_" + str(i), keys)
 		self.assertEqual(len(keys), len(self.KEYS_VALID) + len(self.VALUES_VALID))
 
+	def testPrefixKeysAndCount(self):
+		self.backend.add("User.1", "A")
+		self.backend.add("User.2", "B")
+		self.backend.add("Message.1", "C")
+		self.backend.add("UserProfile.1", "D")
+		self.backend.add("User-extra.1", "E")
+		self.assertEqual(2, self.backend.count("User"))
+		self.assertListEqual(["User.1", "User.2"], sorted(self.backend.keys("User")))
+
 
 # -----------------------------------------------------------------------------
 #
@@ -436,6 +445,8 @@ class SQLiteBackendTest(AbstractBackendTest, unittest.TestCase):
 		self.backend.add("User.1", "A")
 		self.backend.add("User.2", "B")
 		self.backend.add("Message.1", "C")
+		self.backend.add("UserProfile.1", "D")
+		self.backend.add("User-extra.1", "E")
 		self.assertEqual(2, self.backend.count("User"))
 		self.assertListEqual(["User.1", "User.2"], sorted(self.backend.keys("User")))
 
@@ -465,6 +476,15 @@ class SQLiteBackendTest(AbstractBackendTest, unittest.TestCase):
 class MemoryBackendTest(AbstractBackendTest, unittest.TestCase):
 	def _createBackend(self):
 		return storage.MemoryBackend()
+
+	def testPrefixKeysAndCount(self):
+		self.backend.add("User.1", "A")
+		self.backend.add("User.2", "B")
+		self.backend.add("Message.1", "C")
+		self.backend.add("UserProfile.1", "D")
+		self.backend.add("User-extra.1", "E")
+		self.assertEqual(2, self.backend.count("User"))
+		self.assertListEqual(["User.1", "User.2"], sorted(self.backend.keys("User")))
 
 	def testMetadata(self):
 		self.backend.setMetadata("migrations.applied", {"1-a": {"id": "1"}})
@@ -537,6 +557,14 @@ class JournalBackendTest(AbstractBackendTest, unittest.TestCase):
 		self.backend.add("Message.1", "B")
 		self.assertEqual(1, len(seen))
 		self.assertEqual("User.1", seen[0]["key"])
+
+	def testJournalPrefixDoesNotMatchLongerName(self):
+		seen = []
+		self.backend.subscribe("User", lambda key, operation, entry: seen.append(entry))
+		self.backend.add("User.1", "A")
+		self.backend.add("UserProfile.1", "B")
+		self.assertEqual(["User.1"], [entry["key"] for entry in seen])
+		self.assertEqual(["User.1"], self.backend.getChangedKeys(prefix="User"))
 
 	def testJournalBatchDefersNotifications(self):
 		seen = []

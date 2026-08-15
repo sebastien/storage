@@ -74,7 +74,7 @@ class MemoryJournalPersistence(JournalPersistence):
 				continue
 			if keys is not None and entry.get("key") not in keys:
 				continue
-			if prefix is not None and not str(entry.get("key", "")).startswith(prefix):
+			if prefix is not None and not StorageBackend.matchesPrefix(entry.get("key", ""), prefix):
 				continue
 			res.append(entry)
 			if limit is not None and len(res) >= limit:
@@ -107,7 +107,7 @@ class MemoryJournalPersistence(JournalPersistence):
 				continue
 			if keys is not None and key not in keys:
 				continue
-			if prefix is not None and not str(key).startswith(prefix):
+			if prefix is not None and not StorageBackend.matchesPrefix(key, prefix):
 				continue
 			res.append(snapshot)
 		return sorted(res, key=lambda _: _.get("seq", 0))
@@ -322,6 +322,7 @@ class JournalBackend(StorageBackend):
 			entry["relations"] = relations
 		self.persistence.append(entry)
 		self._deferOrNotify(entry)
+		self._notifyInverseRelations(operation, old, new, entry)
 		self._compactIfNeeded(key)
 		return entry
 
@@ -383,7 +384,7 @@ class JournalBackend(StorageBackend):
 		return payload
 
 	def _subscriptionMatches(self, sub_key, key):
-		return sub_key in (None, "*") or sub_key == key or str(key).startswith(str(sub_key))
+		return sub_key in (None, "*") or StorageBackend.matchesPrefix(key, sub_key)
 
 	def _compactIfNeeded(self, key):
 		if self.snapshotEvery and self.persistence.countEntries(key) % self.snapshotEvery == 0:
@@ -468,6 +469,59 @@ class JournalBackend(StorageBackend):
 			}
 		else:
 			return {}
+
+	def _inverseBindings(self, child_type):
+		from ..core import Storable, getCanonicalName
+		from ..objects.descriptors import InverseRelation
+
+		bindings = []
+		for cls in Storable.DECLARED_CLASSES.values():
+			relations = getattr(cls, "RELATIONS", {}) or {}
+			if callable(relations):
+				try:
+					relations = relations(None)
+				except Exception:
+					continue
+			if not isinstance(relations, dict):
+				continue
+			for name, definition in relations.items():
+				if (
+					isinstance(definition, InverseRelation)
+					and getCanonicalName(definition.target) == child_type
+				):
+					bindings.append((cls, name, definition.field))
+		return bindings
+
+	def _notifyInverseRelations(self, operation, old, new, source_entry):
+		payload = new if isinstance(new, dict) else old
+		if not isinstance(payload, dict):
+			return
+		child_type = payload.get("type")
+		child_id = payload.get("id")
+		if not child_type or child_id is None:
+			return
+		ref = {"id": child_id, "type": child_type}
+		removed_all = operation is Operation.REMOVE or new is None
+		for parent_cls, name, field in self._inverseBindings(child_type):
+			old_fk = old.get(field) if isinstance(old, dict) else None
+			new_fk = None if removed_all else (new.get(field) if isinstance(new, dict) else None)
+			if old_fk == new_fk:
+				continue
+			partition = payload.get("partition") or payload.get("owner")
+			if old_fk:
+				self._notifyInverseParent(
+					parent_cls, old_fk, partition, name, source_entry, removed=[ref]
+				)
+			if new_fk:
+				self._notifyInverseParent(
+					parent_cls, new_fk, partition, name, source_entry, added=[ref]
+				)
+
+	def _notifyInverseParent(self, parent_cls, parent_id, partition, name, source_entry, added=None, removed=None):
+		entry = dict(source_entry)
+		entry["key"] = parent_cls.StorageKey(parent_id, partition=partition, owner=partition)
+		entry["relations"] = {name: {"added": added or [], "removed": removed or []}}
+		self._deferOrNotify(entry)
 
 	def _relations(self, old, new):
 		if not isinstance(old, dict) or not isinstance(new, dict):

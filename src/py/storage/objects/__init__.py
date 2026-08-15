@@ -1,6 +1,7 @@
 """Stored object model, descriptors, and runtime storage."""
 
 from .descriptors import (
+	InverseRelation as InverseRelation,
 	Property as Property,
 	PropertyDescriptor as PropertyDescriptor,
 	Relation as Relation,
@@ -15,6 +16,7 @@ for _class in (Ownership, PublicID, StoredObject):
 	_class.__module__ = __name__
 
 __all__ = [
+	"InverseRelation",
 	"ObjectStorage",
 	"Ownership",
 	"PublicID",

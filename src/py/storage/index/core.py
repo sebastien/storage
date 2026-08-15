@@ -91,6 +91,16 @@ class Indexes:
 					indexed_property, indexing_function, c
 				)
 				index = Index(storage, extractor=extractor, restorer=restorer)
+				if "INDEX_FOR" not in c.__dict__:
+					c.INDEX_FOR = {}
+				previous = c.INDEX_FOR.get(indexed_property)
+				if previous:
+					if "INDEXES" in c.__dict__ and previous in c.INDEXES:
+						c.INDEXES.remove(previous)
+					self.indexes = [
+						pair for pair in self.indexes if pair != (previous, c)
+					]
+				c.INDEX_FOR[indexed_property] = index
 				c.AddIndex(index)
 				self.indexes.append((index, c))
 				# We register shortcuts so that <StorableClass>.by.<property> will

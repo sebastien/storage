@@ -25,7 +25,13 @@ from ..core import (
 	restore,
 )
 from ..index import Index
-from .descriptors import Property, PropertyDescriptor, Relation, RelationDescriptor
+from .descriptors import (
+	InverseRelation,
+	Property,
+	PropertyDescriptor,
+	Relation,
+	RelationDescriptor,
+)
 from ..utils import TPrimitive
 
 if TYPE_CHECKING:
@@ -108,6 +114,7 @@ class StoredObject(Storable):
 	OWNERSHIP: ClassVar[Optional[Ownership]] = None
 	RESERVED: ClassVar[list[str]] = ["type", "id", "owner", "partition", "revision", "updates"]
 	INDEXES: ClassVar[list[Index]] = []
+	INDEX_FOR: ClassVar[dict[str, Index]] = {}
 	PUBLIC_ID: ClassVar[Optional[PublicID]] = None
 	PUBLIC_ID_NAMESPACE: ClassVar[Optional[str]] = None
 
@@ -163,6 +170,10 @@ class StoredObject(Storable):
 		if index not in cls.INDEXES:
 			cls.INDEXES.append(index)
 		return cls
+
+	@classmethod
+	def IndexFor(cls, name: str):
+		return (cls.__dict__.get("INDEX_FOR") or {}).get(name)
 
 	@classmethod
 	def RebuildIndexes(cls) -> tuple[int, int]:
@@ -582,8 +593,10 @@ class StoredObject(Storable):
 			list(self.PROPERTIES.keys()) + list(self.RELATIONS.keys()),
 		)
 		if name not in self._relations:
-			self._relations[name] = Relation(self.__class__, self.RELATIONS[name])
+			self._relations[name] = Relation(self, self.RELATIONS[name])
 		self._relations[name].set(value)
+		if isinstance(self.RELATIONS[name], InverseRelation):
+			return self
 		if not self._isNew:
 			# We update the `revision` map only if the object is not new (has
 			# been registered)
@@ -741,6 +754,8 @@ class StoredObject(Storable):
 				yield o
 				yield from o.iterReferences(limit=limit - 1)
 			for _, r in self.iterRelations():
+				if r.isInverse():
+					continue
 				for o in r:
 					if isinstance(o, StoredObject):
 						yield o
@@ -874,6 +889,8 @@ class StoredObject(Storable):
 				if value is not None:
 					res[key] = asPrimitive(value, depth=depth - 1)
 			elif key in self.RELATIONS:
+				if isinstance(self.RELATIONS[key], InverseRelation):
+					continue
 				relation = getattr(self, key)
 				res[key] = asPrimitive(relation, depth=depth - 1)
 		return res
@@ -906,6 +923,11 @@ class StoredObject(Storable):
 				if value is not None:
 					res[key] = asPrimitive(value, depth=depth - 1)
 			for key in self.RELATIONS:
+				if (
+					isinstance(self.RELATIONS[key], InverseRelation)
+					and options.get("target") != "web"
+				):
+					continue
 				relation = getattr(self, key)
 				res[key] = asPrimitive(relation, depth=depth - 1)
 		return res
@@ -923,6 +945,7 @@ class StoredObject(Storable):
 
 
 __all__ = [
+	"InverseRelation",
 	"Ownership",
 	"PublicID",
 	"Property",

@@ -109,6 +109,17 @@ class StorageBackend:
 	def keys(self, collection=None, order=ORDER_NONE):
 		raise NotImplementedError
 
+	@staticmethod
+	def matchesPrefix(key, prefix) -> bool:
+		if prefix is None:
+			return True
+		if isinstance(prefix, (tuple, list)):
+			return any(StorageBackend.matchesPrefix(key, item) for item in prefix)
+		key, prefix = str(key), str(prefix)
+		if not key.startswith(prefix):
+			return False
+		return len(key) == len(prefix) or prefix.endswith(".") or key[len(prefix)] == "."
+
 	def getMetadata(self, key=None, default=None):
 		raise NotImplementedError
 

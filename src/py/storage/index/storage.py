@@ -30,6 +30,7 @@ class IndexStorage(object):
 		# We convert to multiple keys by default
 		if type(keys) not in (tuple, list):
 			keys = (keys,)
+		keys = tuple(key for key in keys if key is not None)
 		# If the object was already there, we remove its entries in both
 		# backends and add new ones
 		has_backward = self.backwardBackend.has(sig)
