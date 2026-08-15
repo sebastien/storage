@@ -1,4 +1,4 @@
-from . import StorageBackend
+from .base import StorageBackend
 from ..core import NOTHING, Operation
 from io import IOBase
 from typing import Iterator
@@ -221,7 +221,9 @@ class DirectoryBackend(StorageBackend):
 	# =========================================================================
 
 	def appendFile(self, path, data):
-		handle = self._getWriteFileHandle(path, mode="ab")
+		handle = self._getWriteFileHandle(
+			path, mode="ab" if isinstance(data, bytes) else "at"
+		)
 		handle.write(data)
 		self._closeFileHandle(handle)
 		return True
@@ -230,9 +232,10 @@ class DirectoryBackend(StorageBackend):
 		# In case we're given None as data, we don't create the file
 		if data is None:
 			return True
-		handle = self._getWriteFileHandle(
-			path, mode="wb" if isinstance(data, bytes) else "wt"
-		)
+		isBinary = isinstance(data, bytes)
+		if isinstance(data, IOBase):
+			isBinary = isinstance(data.read(0), bytes)
+		handle = self._getWriteFileHandle(path, mode="wb" if isBinary else "wt")
 		if isinstance(data, IOBase) or isinstance(data, IOBase):
 			try:
 				shutil.copyfileobj(data, handle)
@@ -330,130 +333,43 @@ class DirectoryBackend(StorageBackend):
 			parent = os.path.dirname(parent)
 
 
-class KVFileBackend(StorageBackend):
-	"""Byte-oriented filesystem backend used by `KVStorage`."""
+class KVFileBackend(DirectoryBackend):
+	"""Compatibility adapter for the general directory backend."""
+
+	CODEC_PREFIX = "storage.codec:"
 
 	def __init__(self, root: str, *, ext: str = ".kv"):
-		super().__init__()
-		self.root = root.rstrip("/") + "/"
-		self.ext = ext
-		if not os.path.isdir(self.root):
-			os.makedirs(self.root, exist_ok=True)
+		super().__init__(
+			root,
+			keyToPath=self._keyToPath,
+			pathToKey=self._pathToKey,
+			extension=ext,
+		)
 
-	def _filename(self, key: str) -> str:
-		return base64.urlsafe_b64encode(key.encode("utf-8")).decode("ascii") + self.ext
+	@staticmethod
+	def _keyToPath(backend, key, ext=None):
+		name = base64.urlsafe_b64encode(key.encode("utf-8")).decode("ascii")
+		return os.path.join(backend.root, name + (ext or backend.DATA_EXTENSION))
 
-	def _keyname(self, name: str) -> str:
-		raw = name[: -len(self.ext)] if self.ext else name
-		return base64.urlsafe_b64decode(raw).decode("utf-8")
-
-	def _path(self, key: str) -> str:
-		return os.path.join(self.root, self._filename(key))
-
-	def set(self, key, data):
-		with open(self._path(key), "wb") as f:
-			f.write(data)
-
-	def add(self, key, data):
-		return self.set(key, data)
-
-	def update(self, key, data):
-		return self.set(key, data)
-
-	def remove(self, key):
-		path = self._path(key)
-		if os.path.isfile(path):
-			os.remove(path)
-
-	def delete(self, key):
-		return self.remove(key)
-
-	def has(self, key):
-		return os.path.isfile(self._path(key))
+	@staticmethod
+	def _pathToKey(backend, path):
+		name = os.path.basename(path)
+		if backend.DATA_EXTENSION and name.endswith(backend.DATA_EXTENSION):
+			name = name[: -len(backend.DATA_EXTENSION)]
+		return base64.urlsafe_b64decode(name).decode("utf-8")
 
 	def get(self, key):
-		path = self._path(key)
-		if not os.path.isfile(path):
-			return None
-		with open(path, "rb") as f:
-			return f.read()
-
-	def keys(self, collection=None, order=StorageBackend.ORDER_NONE):
-		prefix = collection[0] if isinstance(collection, (tuple, list)) and collection else collection
-		keys = []
-		for name in os.listdir(self.root):
-			if not name.endswith(self.ext):
-				continue
-			try:
-				key = self._keyname(name)
-			except Exception:
-				continue
-			if prefix is None or key.startswith(prefix):
-				keys.append(key)
-		if order == StorageBackend.ORDER_ASCENDING:
-			keys = sorted(keys)
-		elif order == StorageBackend.ORDER_DESCENDING:
-			keys = sorted(keys, reverse=True)
-		for key in keys:
-			yield key
-
-	def count(self, key=None):
-		if key is None:
-			return sum(1 for _ in self.keys())
-		return len(tuple(self.keys(key)))
-
-	def size(self) -> int:
-		return self.count()
-
-	def clear(self):
-		for name in os.listdir(self.root):
-			if name.endswith(self.ext):
-				os.remove(os.path.join(self.root, name))
-		metadata_path = self._metadataPath()
-		if os.path.exists(metadata_path):
-			os.unlink(metadata_path)
-
-	def getMetadata(self, key=None, default=None):
-		metadata = self._readMetadata()
-		if key is None:
-			return metadata
-		return metadata.get(key, default)
-
-	def setMetadata(self, key, value):
-		metadata = self._readMetadata()
-		metadata[key] = value
-		self._writeMetadata(metadata)
-		return value
-
-	def removeMetadata(self, key):
-		metadata = self._readMetadata()
-		if key is None:
-			metadata = {}
-		elif key in metadata:
-			del metadata[key]
-		else:
-			return self
-		if metadata:
-			self._writeMetadata(metadata)
-		else:
-			path = self._metadataPath()
-			if os.path.exists(path):
-				os.unlink(path)
-		return self
-
-	def _metadataPath(self) -> str:
-		return os.path.join(self.root, ".metadata.json")
-
-	def _readMetadata(self):
-		path = self._metadataPath()
+		"""Reads either the new bridged envelope or legacy raw codec bytes."""
+		path = self.path(key)
 		if not os.path.exists(path):
-			return {}
-		with open(path, "rt") as f:
-			return json.load(f)
-
-	def _writeMetadata(self, metadata):
-		with open(self._metadataPath(), "wt") as f:
-			json.dump(metadata, f)
+			return None
+		with open(path, "rb") as source:
+			raw = source.read()
+		try:
+			value = self._deserialize(data=raw)
+		except Exception:
+			return raw
+		return value if isinstance(value, str) and value.startswith(self.CODEC_PREFIX) else raw
 
 
 __all__ = [

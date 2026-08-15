@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from . import StorageBackend
+from .base import StorageBackend
 from ..core import Operation, getTimestamp
 
 

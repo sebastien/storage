@@ -1,4 +1,4 @@
-from . import StorageBackend
+from .base import StorageBackend
 from ..core import asJSON, unJSON
 
 # FIMXE: We should get away from the DBM backend as it seems to have

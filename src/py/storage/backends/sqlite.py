@@ -1,4 +1,4 @@
-from . import StorageBackend
+from .base import StorageBackend
 
 from io import IOBase
 import os
@@ -355,9 +355,10 @@ class SQLiteBackend(StorageBackend):
 
 
 class KVSqliteBackend(StorageBackend):
-	"""Byte-oriented SQLite backend used by `KVStorage`."""
+	"""Compatibility backend for the legacy BLOB-based KV SQLite schema."""
 
 	DEFAULT_TABLE = "kv"
+	VALUE_FORMAT = "bytes"
 
 	def __init__(self, path: str, *, table: str = DEFAULT_TABLE, wal: bool = True):
 		super().__init__()
@@ -380,8 +381,7 @@ class KVSqliteBackend(StorageBackend):
 				self._connection.execute("PRAGMA journal_mode=WAL")
 				self._connection.execute("PRAGMA synchronous=NORMAL")
 			self._connection.execute(
-				"CREATE TABLE IF NOT EXISTS %s (key TEXT PRIMARY KEY, value BLOB)"
-				% self.table
+				"CREATE TABLE IF NOT EXISTS %s (key TEXT PRIMARY KEY, value BLOB)" % self.table
 			)
 			self._connection.execute(
 				"CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)"
@@ -419,19 +419,13 @@ class KVSqliteBackend(StorageBackend):
 
 	def has(self, key):
 		with self._lock:
-			cur = self._conn().execute(
-				"SELECT 1 FROM %s WHERE key = ?" % self.table,
-				(key,),
-			)
-			return cur.fetchone() is not None
+			cursor = self._conn().execute("SELECT 1 FROM %s WHERE key = ?" % self.table, (key,))
+			return cursor.fetchone() is not None
 
 	def get(self, key):
 		with self._lock:
-			cur = self._conn().execute(
-				"SELECT value FROM %s WHERE key = ?" % self.table,
-				(key,),
-			)
-			row = cur.fetchone()
+			cursor = self._conn().execute("SELECT value FROM %s WHERE key = ?" % self.table, (key,))
+			row = cursor.fetchone()
 			return row[0] if row else None
 
 	def keys(self, collection=None, order=StorageBackend.ORDER_NONE):
@@ -444,19 +438,14 @@ class KVSqliteBackend(StorageBackend):
 			rows = list(self._conn().execute(query))
 		prefix = collection[0] if isinstance(collection, (tuple, list)) and collection else collection
 		for row in rows:
-			key = row[0]
-			if prefix is None or key.startswith(prefix):
-				yield key
+			if prefix is None or row[0].startswith(prefix):
+				yield row[0]
 
 	def count(self, key=None) -> int:
 		if key is None:
 			with self._lock:
-				cur = self._conn().execute("SELECT count(*) FROM %s" % self.table)
-				return cur.fetchone()[0]
+				return self._conn().execute("SELECT count(*) FROM %s" % self.table).fetchone()[0]
 		return len(tuple(self.keys(key)))
-
-	def size(self) -> int:
-		return self.count()
 
 	def clear(self):
 		with self._lock:
@@ -468,9 +457,8 @@ class KVSqliteBackend(StorageBackend):
 		with self._lock:
 			if key is None:
 				rows = list(self._conn().execute("SELECT key, value FROM metadata"))
-				return dict((row[0], self._deserialize(data=row[1])) for row in rows)
-			cur = self._conn().execute("SELECT value FROM metadata WHERE key = ?", (key,))
-			row = cur.fetchone()
+				return {row[0]: self._deserialize(data=row[1]) for row in rows}
+			row = self._conn().execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
 			return default if row is None else self._deserialize(data=row[0])
 
 	def setMetadata(self, key, value):
@@ -485,10 +473,7 @@ class KVSqliteBackend(StorageBackend):
 
 	def removeMetadata(self, key):
 		with self._lock:
-			if key is None:
-				self._conn().execute("DELETE FROM metadata")
-			else:
-				self._conn().execute("DELETE FROM metadata WHERE key = ?", (key,))
+			self._conn().execute("DELETE FROM metadata" if key is None else "DELETE FROM metadata WHERE key = ?", () if key is None else (key,))
 			self._conn().commit()
 		return self
 

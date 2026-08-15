@@ -10,9 +10,9 @@ Usage::
 
 	from storage.kv import KVStorage, StringKVKeyNormalizer
 	from storage.formats import JSONCodec
-	from storage.backends.memory import KVMemoryBackend
+	from storage.backends.memory import MemoryBackend
 
-	b = KVMemoryBackend()
+	b = MemoryBackend()
 	kv = KVStorage(b, normalizer=StringKVKeyNormalizer(), codec=JSONCodec())
 	kv.set("hello", {"world": 42})
 """
@@ -30,6 +30,7 @@ from typing import (
 )
 
 from .backends import StorageBackend
+from .backends.bridge import CodecBridge, SerializationBackend, SerializationBridge
 from .formats.base import Codec
 
 
@@ -225,12 +226,20 @@ class KVStorage(Generic[K, V]):
 		*,
 		prefix: str = "",
 		normalizer: KVKeyNormalizer[K],
-		codec: Codec[V],
+		codec: Optional[Codec[V]] = None,
+		bridge: Optional[SerializationBridge] = None,
 	):
-		self.backend = backend
+		if codec is None and bridge is None:
+			raise ValueError("KVStorage requires a codec or serialization bridge")
+		if codec is not None and bridge is not None:
+			raise ValueError("KVStorage accepts either a codec or serialization bridge")
+		bridge = bridge or CodecBridge(codec, getattr(backend, "VALUE_FORMAT", "primitive"))
+		self.backend = SerializationBackend(backend, bridge)
+		self.physicalBackend = backend
 		self.prefix = prefix
 		self.normalizer = normalizer
 		self.codec = codec
+		self.bridge = bridge
 
 	def _key(self, key: Union[str, K]) -> str:
 		"""Normalize user key and prefix it."""
@@ -247,19 +256,13 @@ class KVStorage(Generic[K, V]):
 			s = s[len(self.prefix):]
 		return self.normalizer.parse(s)
 
-	def _encode(self, value: V) -> bytes:
-		return self.codec.encode(value)
-
-	def _decode(self, data: bytes) -> V:
-		return self.codec.decode(data)
-
 	# --- Single operations -----------------------------------------------
 
 	def set(self, key: Union[str, K], value: V) -> V:
 		"""Set ``key`` to ``value``. Returns ``value``."""
 		sk = self._key(key)
 		try:
-			self.backend.set(sk, self._encode(value))
+			self.backend.set(sk, value)
 		except KVError:
 			raise
 		except Exception as e:
@@ -275,7 +278,7 @@ class KVStorage(Generic[K, V]):
 			raise
 		except Exception as e:
 			raise KVFailure("get(%s) failed: %s" % (key, e)) from e
-		return self._decode(data) if data is not None else None
+		return data
 
 	def has(self, key: Union[str, K]) -> bool:
 		"""Return ``True`` if ``key`` exists in the store."""
@@ -291,6 +294,8 @@ class KVStorage(Generic[K, V]):
 		"""Remove ``key`` from the store. Idempotent."""
 		sk = self._key(key)
 		try:
+			if not self.backend.has(sk):
+				return
 			self.backend.delete(sk)
 		except KVError:
 			raise
@@ -380,7 +385,7 @@ class KVStorage(Generic[K, V]):
 	def size(self) -> int:
 		"""Return the number of entries in the store."""
 		try:
-			return self.backend.size()
+			return sum(1 for _ in self.ilist())
 		except KVError:
 			raise
 		except Exception as e:
@@ -389,7 +394,8 @@ class KVStorage(Generic[K, V]):
 	def clear(self) -> None:
 		"""Remove all entries from the store."""
 		try:
-			self.backend.clear()
+			for key in list(self.ilist()):
+				self.delete(key)
 		except KVError:
 			raise
 		except Exception as e:

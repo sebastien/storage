@@ -25,9 +25,11 @@ from storage.kv import (
 	TupleKVKeyNormalizer,
 )
 from storage.formats import JSONCodec
-from storage.backends.memory import KVMemoryBackend
-from storage.backends.sqlite import KVSqliteBackend
+from storage.backends.memory import MemoryBackend
+from storage.backends.sqlite import SQLiteBackend
+from storage.backends.fs import DirectoryBackend
 from storage.backends.fs import KVFileBackend
+from storage.backends.bridge import CodecBridge, SerializationBackend
 
 
 # -----------------------------------------------------------------------------
@@ -313,14 +315,14 @@ class TestTupleKVKeyNormalizer(unittest.TestCase):
 
 class TestKVMemoryBackend(KVStorageCommonTests, unittest.TestCase):
 	def make_backend(self) -> KVStorageBackend:
-		return KVMemoryBackend()
+		return MemoryBackend()
 
 
 class TestKVSqliteBackend(KVStorageCommonTests, unittest.TestCase):
 	def make_backend(self) -> KVStorageBackend:
 		self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
 		self._tmp.close()
-		return KVSqliteBackend(self._tmp.name)
+		return SQLiteBackend(self._tmp.name)
 
 	def tearDown(self):
 		if hasattr(self, "_tmp") and os.path.exists(self._tmp.name):
@@ -336,6 +338,91 @@ class TestKVFileBackend(KVStorageCommonTests, unittest.TestCase):
 		if hasattr(self, "_tmp_dir") and os.path.isdir(self._tmp_dir):
 			shutil.rmtree(self._tmp_dir)
 
+	def test_legacy_raw_codec_value(self):
+		backend = self.make_backend()
+		with open(backend.path("legacy"), "wb") as target:
+			target.write(b'{"preserved": true}')
+		kv = KVStorage(
+			backend,
+			normalizer=StringKVKeyNormalizer(),
+			codec=JSONCodec(),
+		)
+		self.assertEqual({"preserved": True}, kv.get("legacy"))
+
+
+class TestKVGenericMemoryBackend(KVStorageCommonTests, unittest.TestCase):
+	"""KV values are bridged through the general in-memory backend."""
+
+	def make_backend(self) -> KVStorageBackend:
+		return MemoryBackend()
+
+	def test_prefix_maintenance_isolation(self):
+		backend = MemoryBackend()
+		first = KVStorage(
+			backend,
+			prefix="first:",
+			normalizer=StringKVKeyNormalizer(),
+			codec=JSONCodec(),
+		)
+		second = KVStorage(
+			backend,
+			prefix="second:",
+			normalizer=StringKVKeyNormalizer(),
+			codec=JSONCodec(),
+		)
+		backend.add("object", {"value": "preserved"})
+		first.set("a", 1)
+		second.set("b", 2)
+
+		self.assertEqual(1, first.size())
+		first.clear()
+		self.assertFalse(first.has("a"))
+		self.assertEqual(2, second.get("b"))
+		self.assertEqual({"value": "preserved"}, backend.get("object"))
+
+
+class TestSerializationBackend(unittest.TestCase):
+	def test_metadata_round_trip_and_enumeration(self):
+		backend = SerializationBackend(MemoryBackend(), CodecBridge(JSONCodec()))
+		backend.setMetadata("settings", {"enabled": True})
+
+		self.assertEqual({"enabled": True}, backend.getMetadata("settings"))
+		self.assertEqual({"settings": {"enabled": True}}, backend.getMetadata())
+
+	def test_record_streaming_is_not_advertised(self):
+		backend = SerializationBackend(DirectoryBackend(tempfile.mkdtemp()), CodecBridge(JSONCodec()))
+		try:
+			self.assertFalse(backend.HAS_STREAM)
+			with self.assertRaises(NotImplementedError):
+				backend.stream("record")
+		finally:
+			shutil.rmtree(backend.backend.root)
+
+
+class TestKVGenericSqliteBackend(KVStorageCommonTests, unittest.TestCase):
+	"""KV values are bridged through the general SQLite backend."""
+
+	def make_backend(self) -> KVStorageBackend:
+		self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
+		self._tmp.close()
+		return SQLiteBackend(self._tmp.name)
+
+	def tearDown(self):
+		if hasattr(self, "_tmp") and os.path.exists(self._tmp.name):
+			os.unlink(self._tmp.name)
+
+
+class TestKVGenericFileBackend(KVStorageCommonTests, unittest.TestCase):
+	"""KV values are bridged through the general filesystem backend."""
+
+	def make_backend(self) -> KVStorageBackend:
+		self._tmp_dir = tempfile.mkdtemp(prefix="kv_directory_test_")
+		return DirectoryBackend(self._tmp_dir)
+
+	def tearDown(self):
+		if hasattr(self, "_tmp_dir") and os.path.isdir(self._tmp_dir):
+			shutil.rmtree(self._tmp_dir)
+
 
 # -----------------------------------------------------------------------------
 #
@@ -345,7 +432,7 @@ class TestKVFileBackend(KVStorageCommonTests, unittest.TestCase):
 
 
 class TestKVFileBackendPathKeys(KVStorageBackendTestBase, unittest.TestCase):
-	"""Tests KVStorage with PathKVKeyNormalizer + KVFileBackend."""
+	"""Tests KVStorage path keys with the opaque directory key adapter."""
 
 	def make_backend(self) -> KVStorageBackend:
 		self._tmp_dir = tempfile.mkdtemp(prefix="kv_fs_path_")
@@ -404,7 +491,7 @@ class TestKVStorageTupleKeys(KVStorageBackendTestBase, unittest.TestCase):
 	"""Tests KVStorage with TupleKVKeyNormalizer + MemoryBackend."""
 
 	def make_backend(self) -> KVStorageBackend:
-		return KVMemoryBackend()
+		return MemoryBackend()
 
 	def test_tuple_keys(self):
 		b = self.make_backend()

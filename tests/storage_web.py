@@ -11,7 +11,7 @@ from storage import (
 	MemoryBackend,
 	Types,
 	KVStorage,
-	KVMemoryBackend,
+	MemoryBackend,
 	StringKVKeyNormalizer,
 )
 from storage.formats import JSONCodec
@@ -72,7 +72,7 @@ class StorageWebTest(unittest.TestCase):
 			prefix="/api", classes=(WebItem, WebTag, WebBlob, WebOwner, WebMember)
 		)
 		self.kv = KVStorage(
-			KVMemoryBackend(),
+			MemoryBackend(),
 			normalizer=StringKVKeyNormalizer(),
 			codec=JSONCodec(),
 		)
