@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 
+from storage.core import getCanonicalName
 from storage.metrics import MetricStorage, MetricsDirectoryBackend, StoredMetric
 
 
@@ -18,6 +19,8 @@ class MetricsTest(unittest.TestCase):
 
 	def test_metric_round_trip(self):
 		metric = StoredMetric("requests", 3, meta={"host": "test"}, timestamp=10)
+		self.assertEqual("storage.metrics.StoredMetric", getCanonicalName(StoredMetric))
+		self.assertEqual("storage.metrics.StoredMetric", metric.export()["type"])
 		self.storage.add(metric)
 
 		values = list(self.storage.get("requests"))

@@ -1123,15 +1123,4 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 				return self.onRawGetData(storableClass, request, sid)
 
 			yield self._handler(handler_raw, ("GET", url + "/{sid:segment}/data"))
-
-
-def __getattr__(name):
-	"""Resolve the historical concrete server import without an import cycle."""
-	if name == "StorageServer":
-		from .server import StorageServer
-
-		return StorageServer
-	raise AttributeError(name)
-
-
 # EOF

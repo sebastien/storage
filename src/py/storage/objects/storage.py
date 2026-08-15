@@ -6,10 +6,10 @@ import traceback
 import weakref
 from typing import Any, Optional, Self
 
-from .backends import StorageBackend
-from .core import Storable, asPrimitive, getCanonicalName
-from .objects import Ownership, PublicID, StoredObject
-from .utils import atomic
+from ..backends import StorageBackend
+from ..core import Storable, asPrimitive, getCanonicalName
+from .model import Ownership, PublicID, StoredObject
+from ..utils import atomic
 
 
 class ObjectStorage:
@@ -67,6 +67,8 @@ class ObjectStorage:
 		# NOTE: We call restore only when the object was not already in cache
 		# NOTE: Exported stored object  is expected to be a dict as give
 		# by StoredObject.export
+		from ..migrations import migrationExecutionActive
+
 		assert type(exportedStoredObject) is dict, (
 			"Expected a dictionary as exported by StoredObject.export(), got a %s"
 			% (type(exportedStoredObject))
@@ -94,7 +96,12 @@ class ObjectStorage:
 			assert storage_key not in self._cache
 			# We instanciate the object, which will then be available in the cache, as
 			# the constructor calls Storage.register.
-			new_object = actual_class(id, exportedStoredObject, restored=True)
+			new_object = actual_class(
+				id,
+				exportedStoredObject,
+				restored=True,
+				skipExtraProperties=migrationExecutionActive(),
+			)
 			assert storage_key in self._cache
 			return new_object
 		else:
@@ -330,8 +337,14 @@ class ObjectStorage:
 		self.backend.sync()
 
 	def validateSchema(self, applyMigrations: Optional[bool] = None):
-		from .schema import SchemaValidator
+		from ..migrations import migrationExecutionActive
+		from ..schema import SchemaValidator
 
+		if migrationExecutionActive():
+			raise RuntimeError(
+				"Cannot initialize object storage during migration execution; "
+				"use the migration context storage instead"
+			)
 		validator = SchemaValidator(
 			self,
 			migrate=self.migrateSchemaOnUse if applyMigrations is None else applyMigrations,

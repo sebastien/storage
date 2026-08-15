@@ -157,6 +157,42 @@ class MigrationsTest(unittest.TestCase):
 		self.assertNotIn("2-b", applied)
 		self.assertEqual(["a"], self.target.events)
 
+	def testMigrationRejectsReentrantSchemaInitialization(self):
+		self.writeMigration(
+			"1-reentrant.py",
+			"""
+			from storage import MemoryBackend
+			from storage.objects import ObjectStorage, StoredObject
+
+			NestedMember = type(
+				"NestedMember",
+				(StoredObject,),
+				{"__module__": "migration_reentrant", "COLLECTION": "nestedMember"},
+			)
+
+			def apply(storage):
+				ObjectStorage(MemoryBackend()).use(NestedMember)
+			""",
+		)
+
+		with self.assertRaisesRegex(RuntimeError, "during migration execution"):
+			MigrationOperator(self.target).apply()
+
+	def testMigrationExecutionGuardIsClearedAfterFailure(self):
+		self.writeMigration(
+			"1-failing.py",
+			"""
+			def apply(storage):
+				raise RuntimeError("boom")
+			""",
+		)
+
+		with self.assertRaisesRegex(RuntimeError, "boom"):
+			MigrationOperator(self.target).apply()
+
+		Member = self.makeClass("AfterFailureMember")
+		ObjectStorage(MemoryBackend()).use(Member)
+
 	def testPendingReturnsOnlyUnappliedMigrations(self):
 		self.writeMigration(
 			"1-a.py",

@@ -1,6 +1,6 @@
 """Metric storage runtime implementation."""
 
-from .core import Operation
+from ..core import Operation
 
 
 _DEFAULT_METRIC_CLASS = object()
@@ -24,7 +24,7 @@ class MetricStorage:
 	def __init__(self, backend, metricClass=_DEFAULT_METRIC_CLASS):
 		"""Creates a new metric storage with the given backend"""
 		if metricClass is _DEFAULT_METRIC_CLASS:
-			from .metrics import StoredMetric
+			from .model import StoredMetric
 
 			metricClass = StoredMetric
 		self.backend = backend

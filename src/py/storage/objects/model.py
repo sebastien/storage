@@ -1,20 +1,19 @@
 """Object persistence models and descriptors.
 
-This module groups three closely related concerns:
+This module contains stored object declarations and lifecycle behavior.
 
 - stored object declarations and lifecycle
-- lazy property and relation access
-- object storage compatibility import
+- descriptor bindings are supplied by ``objects.descriptors``
 
-The main public API is `StoredObject` and `ObjectStorage`.
+The main public API is `StoredObject`; the runtime lives in ``objects.storage``.
 """
 
 import inspect
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, ClassVar, Iterator, List, Optional, Self, Type
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Iterator, Optional, Self, Type
 
-from .core import (
+from ..core import (
 	NOTHING,
 	Storable,
 	Identifier,
@@ -25,9 +24,12 @@ from .core import (
 	isSame,
 	restore,
 )
-from .index import Index
-from . import object_descriptors as _object_descriptors
-from .utils import TPrimitive
+from ..index import Index
+from .descriptors import Property, PropertyDescriptor, Relation, RelationDescriptor
+from ..utils import TPrimitive
+
+if TYPE_CHECKING:
+	from .storage import ObjectStorage
 
 # TODO: Do some garbage-collection in the cache or use weak-references
 
@@ -57,19 +59,6 @@ from .utils import TPrimitive
 # FIXME: How to update the objects when the db has changed locally
 
 # TODO: Use JSON-patch to record history of changes
-
-
-# -----------------------------------------------------------------------------
-#
-# ACCESS UTILITIES
-#
-# -----------------------------------------------------------------------------
-
-
-def _resolveAccessor(storedObject, prefix: str, name: str):
-	cap_name = name[0].upper() + name[1:]
-	accessor_name = prefix + cap_name
-	return getattr(storedObject, accessor_name) if hasattr(storedObject, accessor_name) else None
 
 
 @dataclass(frozen=True)
@@ -933,345 +922,7 @@ class StoredObject(Storable):
 		return "<obj:%s %s:%s>" % (self.__class__.__name__, id(self), self.id)
 
 
-# -----------------------------------------------------------------------------
-#
-# ACCESS DESCRIPTORS
-#
-# -----------------------------------------------------------------------------
-
-
-class PropertyDescriptor(object):
-	"""Provides transparent access to setProperty/getProperty to StoredObjects."""
-
-	def __init__(self, name):
-		self.name = name
-
-	def __get__(self, instance, owner):
-		# NOTE: Instance is null when the descriptor is directly accessed
-		# at class level, in which case we return the descriptor itself
-		if not instance:
-			return self
-		return instance.getProperty(self.name)
-
-	def __set__(self, instance, value):
-		assert instance, "Property descriptors cannot be re-assigned in class"
-		return instance.setProperty(self.name, value)
-
-
-# -----------------------------------------------------------------------------
-#
-# RELATION DESCRIPTOR
-#
-# -----------------------------------------------------------------------------
-
-
-class RelationDescriptor(object):
-	"""Provides transparent access to setRelation/getRelation to StoredObjects."""
-
-	def __init__(self, name):
-		self.name = name
-
-	def __get__(self, instance, owner):
-		# See not on PropertyDescriptor
-		if not instance:
-			return self
-		return instance.getRelation(self.name)
-
-	def __set__(self, instance, value):
-		assert instance, "Relation descriptors cannot be re-assigned in class"
-		return instance.setRelation(self.name, value)
-
-
-# -----------------------------------------------------------------------------
-#
-# ACCESS VALUES
-#
-# -----------------------------------------------------------------------------
-
-
-class Property(object):
-	"""Wraps a value, making sure it is restored on the first access. This
-	allows to lazily convert primitives to their Storable objects, avoiding
-	chain reactions of loading."""
-
-	def __init__(self, name, storedObject):
-		self.name = name
-		self.value = None
-		self.restored = False
-		assert storedObject, "Property requires stored object instance"
-		self.storedObject = storedObject
-		self._setter = _resolveAccessor(storedObject, "set", name)
-		self._getter = _resolveAccessor(storedObject, "get", name)
-
-	def set(self, value):
-		if self._setter:
-			# We only use the setter if it is defined
-			old_value = value
-			value = self._setter(value)
-			# If the setter returns None or self, we restore the old_value
-			if value is None or value is self.storedObject:
-				value = old_value
-		self.value = value
-		assert not isinstance(value, Property)
-		self.restored = False
-		return self.value
-
-	def get(self):
-		value = None
-		if not self.restored:
-			value = self.value = restore(self.value) if self.value else self.value
-			self.restored = True
-			if self._getter:
-				old_value = value
-				value = self._getter(value)
-				# If the setter returns None or self, we restore the old_value
-				if value is None or value is self.storedObject:
-					value = old_value
-		return self.value
-
-	def export(self, **options) -> TPrimitive:
-		if "depth" not in options:
-			options["depth"] = 0
-		return asPrimitive(self.value, **options)
-
-	def __repr__(self):
-		return "@property:" + repr(self.value)
-
-
-# -----------------------------------------------------------------------------
-#
-# RELATION
-#
-# -----------------------------------------------------------------------------
-
-
-class Relation:
-	"""Represents a relation between one object and another. This is a one-to-many
-	relationship that can be lazily loaded."""
-
-	def __init__(self, parentClass, definition):
-		# FIXME: Parent introduces a circular reference
-		self.parentClass = parentClass
-		self.definition = definition
-		self.values = None
-
-	def init(self, values):
-		"""Initializes the relation with the given values"""
-		self.values = values
-		return self
-
-	def add(self, value):
-		return self.append(value)
-
-	def append(self, value):
-		if not value:
-			return self
-		if not (isinstance(value, dict) or isinstance(value, StoredObject)):
-			raise ValueError(
-				f"Relation only accepts object or exported object, got {type(value)}: {value}"
-			)
-		restored: StoredObject = restore(value)
-		if not isinstance(
-			restored, self.getRelationClass()
-		) or restored.typeName != getCanonicalName(self.getRelationClass()):
-			raise ValueError(
-				f"Relation expects value of type {self.getRelationClass()}, got {type(restored)}: {restored}"
-			)
-		# We create values if empty
-		if self.values is None:
-			self.values = []
-		if not self.isMany() and len(self.values):
-			raise RuntimeError(
-				f"Cannot append to a single value relation, relation has {len(self.values)} values: {restored}"
-			)
-		else:
-			self.values.append(restored)
-		return self
-
-	def remove(self, value):
-		if not value:
-			return self
-		self.values = [_ for _ in self.get(resolve=False) if not isSame(_, value)]
-		return self
-
-	def swap(self, a, b):
-		if not self.isMany():
-			raise RuntimeError("Cannot swap values in a single value relation")
-		if self.values is None:
-			self.values = []
-		self.values[a], self.values[b] = self.values[b], self.values[a]
-		return self
-
-	def clear(self):
-		self.values = []
-		return self
-
-	def set(self, values):
-		self.clear()
-		if type(values) not in (list, tuple):
-			values = (values,)
-		list(map(self.add, values))
-		return self
-
-	# FIXME: Should have better access methods to return one or many
-	def get(self, start=0, limit=-1, resolve=True, depth=0):
-		# FIXME: We should always have resolve=True, as otherwise the data
-		# might get out of sync. For instance, in ARTNet when a TutorialStep changes
-		# its media, the serialized version of TutorialStep on disk might change
-		relation_class = self.getRelationClass()
-		values = self.values
-		i = 0
-		if values is not None:
-			for v in values:
-				if i >= start and (limit == -1 or i < limit):
-					if resolve:
-						# If we resolve the value, we make sure to give
-						# and actual storable
-						if not isinstance(v, Storable):
-							if type(v) is dict:
-								yield restore(v)
-							else:
-								# NOTE: This will nor work if relation_class
-								# is not the direct class to instanciate.
-								yield relation_class.Get(v)
-						else:
-							yield v
-					else:
-						# If we do not resolve, we make sure to give a
-						# (compact) representation of the value, or the
-						# value itself
-						if isinstance(v, Storable):
-							yield v.export(depth=depth)
-						# NOTE: Here we only export the minimum fields so that
-						# we're explicit that this is a reference and not the
-						# full value
-						elif isinstance(v, dict) and "id" in v and "type" in v:
-							yield {"id": v["id"], "type": v["type"]}
-						else:
-							yield v
-				i += 1
-
-	def one(self, index=0):
-		try:
-			return next(self.get(resolve=True, start=index))
-		except StopIteration:
-			return None
-
-	def isEmpty(self) -> bool:
-		try:
-			next(self.get(resolve=False))
-			return False
-		except StopIteration:
-			return True
-
-	def contains(self, objectOrID: StoredObject | str) -> bool:
-		"""Alias for has"""
-		return self.has(objectOrID)
-
-	def has(self, objectOrID: StoredObject | str) -> bool:
-		id = objectOrID.id if isinstance(objectOrID, StoredObject) else objectOrID
-		for v in self.get(resolve=False):
-			if isinstance(v, dict) and "id" in v and "type" in v and v["id"] == id:
-				return True
-		return False
-
-	def list(self):
-		return self.get(resolve=True)
-
-	def all(self):
-		"""Alias for `list()`"""
-		return self.list()
-
-	def isMany(self) -> bool:
-		return isinstance(self.definition, tuple) or isinstance(self.definition, list)
-
-	def getRelationClass(self):
-		if self.isMany():
-			return self.definition[0]
-		else:
-			return self.definition
-
-	def export(self, **options) -> List[TPrimitive]:
-		o = {}
-		o.update(options)
-		# FIXME: For serialization we want relations to be shallow (id/type)
-		# We change depth as we want relations to be transparent
-		if "depth" in o:
-			o["depth"] += 1
-		# FIXME: We have to be very clear about the resolve here -- is it a
-		# good thing?
-		# FIXME: What do we do if an element is referenced but got removed?
-		return [
-			asPrimitive(_, **o) for _ in self.get(resolve=options.get("resolve", True))
-		]
-
-	def __len__(self) -> int:
-		if self.values:
-			return len(self.values)
-		else:
-			return 0
-
-	def __call__(self, *args, **kwargs):
-		return self.get(*args, **kwargs)
-
-	def __getitem__(self, key):
-		if type(key) not in (
-			int,
-			float,
-		):
-			raise IndexError(f"Relations can only be queried by index, got: {key}")
-		elif key < 0:
-			key = max(0, len(self) + key)
-		for _ in self.get():
-			if key == 0:
-				return _
-			else:
-				key -= 1
-		return None
-
-	def __iter__(self):
-		return self.get(resolve=True)
-
-	def __repr__(self):
-		return "<relation:%s=%s>" % (self.definition, self.values)
-
-	def __delete__(self, instance, owner):
-		self.clear()
-		return self
-
-
-# The descriptor/value implementations live in ``object_descriptors``.  Keep
-# this module as their public façade so existing imports retain their identity.
-globals().update(
-	{
-		"Property": _object_descriptors.Property,
-		"PropertyDescriptor": _object_descriptors.PropertyDescriptor,
-		"Relation": _object_descriptors.Relation,
-		"RelationDescriptor": _object_descriptors.RelationDescriptor,
-	}
-)
-
-
-# -----------------------------------------------------------------------------
-#
-# STORAGE RUNTIME COMPATIBILITY
-#
-# -----------------------------------------------------------------------------
-try:
-	from .object_storage import ObjectStorage
-except ImportError:
-	# Direct imports of object_storage see this module while it is initializing.
-	pass
-
-
-# -----------------------------------------------------------------------------
-#
-# PUBLIC API
-#
-# -----------------------------------------------------------------------------
-
 __all__ = [
-	"ObjectStorage",
 	"Ownership",
 	"PublicID",
 	"Property",

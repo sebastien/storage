@@ -7,7 +7,7 @@ runtime in :mod:`storage.raw`.
 import base64
 import io
 
-from .core import Identifier, NOTHING, Storable, getCanonicalName, getTimestamp
+from ..core import Identifier, NOTHING, Storable, getCanonicalName, getTimestamp
 
 
 def _coerceCacheKey(rawOrKey):

@@ -385,11 +385,3 @@ class KVWebMixin:
 		yield self._handler(handler_items_xml, ("GET", base + "/items.xml"))
 		yield self._handler(handler_clear, ("POST", base + "/clear"))
 		yield self._handler(handler_commands, ("POST", base + "/commands"))
-
-
-def __getattr__(name):
-	if name == "StorageServer":
-		from .server import StorageServer
-
-		return StorageServer
-	raise AttributeError(name)

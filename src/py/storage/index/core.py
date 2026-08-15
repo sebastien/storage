@@ -2,10 +2,10 @@
 
 from typing import Type
 
-from .backends import StorageBackend
-from .core import Storable, getCanonicalName
+from ..backends import StorageBackend
+from ..core import Storable, getCanonicalName
 from .indexing import Indexing as Indexing, RE_NOALPHANUM as RE_NOALPHANUM, RE_SPACES as RE_SPACES
-from .index_storage import IndexStorage as IndexStorage
+from .storage import IndexStorage as IndexStorage
 
 
 # -----------------------------------------------------------------------------

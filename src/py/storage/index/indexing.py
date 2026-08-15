@@ -4,7 +4,7 @@ import re
 import unicodedata
 from typing import Optional
 
-from .core import Storable
+from ..core import Storable
 
 
 RE_SPACES = re.compile(r"[\s\t\n]+")

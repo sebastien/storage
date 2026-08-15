@@ -7,7 +7,7 @@ creating an import cycle with the rest of the storage model.
 
 from typing import Any, List
 
-from .core import Storable, asPrimitive, getCanonicalName, isSame, restore
+from ..core import Storable, asPrimitive, getCanonicalName, isSame, restore
 
 
 def _resolveAccessor(storedObject, prefix: str, name: str):

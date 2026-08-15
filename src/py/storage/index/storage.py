@@ -1,6 +1,6 @@
 """Persistent storage implementation for indexes."""
 
-from .core import getTimestamp
+from ..core import getTimestamp
 
 
 # TODO: Add cached ordered keys

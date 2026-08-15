@@ -174,12 +174,3 @@ __all__ = [
 	"requestFormat",
 	"stripFormatSuffix",
 ]
-
-
-def __getattr__(name):
-	# Keep the staged compatibility import lazy so this module never imports the server eagerly.
-	if name == "StorageServer":
-		from .server import StorageServer
-
-		return StorageServer
-	raise AttributeError(name)

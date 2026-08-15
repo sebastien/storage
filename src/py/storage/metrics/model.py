@@ -1,8 +1,6 @@
 """Monotone metric model and storage helpers."""
 
-from .core import NOTHING, Storable, getCanonicalName, getTimestamp
-from .metric_storage import MetricStorage
-from .metrics_backend import MetricsDirectoryBackend
+from ..core import NOTHING, Storable, getCanonicalName, getTimestamp
 
 # -----------------------------------------------------------------------------
 #
@@ -90,6 +88,10 @@ class StoredMetric(Storable):
 		)
 
 
+# Keep persisted names stable while allowing the implementation to live here.
+StoredMetric.__module__ = "storage.metrics"
+
+
 # -----------------------------------------------------------------------------
 #
 # PUBLIC API
@@ -97,8 +99,6 @@ class StoredMetric(Storable):
 # -----------------------------------------------------------------------------
 
 __all__ = [
-	"MetricStorage",
-	"MetricsDirectoryBackend",
 	"StoredMetric",
 ]
 

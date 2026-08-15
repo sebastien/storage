@@ -7,6 +7,7 @@ import importlib.util
 import inspect
 import os
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional
 
@@ -18,6 +19,14 @@ MIGRATIONS_ENV_VAR = "STORAGE_MIGRATIONS_PATH"
 MIGRATIONS_METADATA_KEY = "migrations.applied"
 MIGRATIONS_PROGRESS_METADATA_KEY = "migrations.progress"
 MIGRATION_RE = re.compile(r"^(?P<id>\d+)-(?P<name>[A-Za-z0-9_]+)\.py$")
+_MIGRATION_EXECUTION_DEPTH: ContextVar[int] = ContextVar(
+	"storage_migration_execution_depth", default=0
+)
+
+
+def migrationExecutionActive() -> bool:
+	"""Return whether a migration callback is currently executing."""
+	return _MIGRATION_EXECUTION_DEPTH.get() > 0
 
 
 @dataclass(frozen=True)
@@ -300,30 +309,34 @@ class MigrationOperator:
 		if self.storage is None or self.backend is None:
 			raise RuntimeError("MigrationOperator.apply requires a storage or backend")
 		self.prepare()
-		for migrationRecord in self.pending():
-			module = _loadMigrationModule(migrationRecord)
-			apply = getattr(module, "apply", None)
-			if not callable(apply):
-				raise RuntimeError(
-					"Migration does not define apply(storage): %s" % migrationRecord.path
-				)
-			if getattr(apply, "USES_MIGRATION_CONTEXT", False):
-				context = MigrationContext(self.storage, self.backend, migrationRecord)
-				apply(context)
-				context.clear()
-			else:
-				apply(self.storage)
-			self.records[migrationRecord.key] = {
-				"id": migrationRecord.id,
-				"name": migrationRecord.name,
-				"filename": migrationRecord.filename,
-				"path": migrationRecord.path,
-				"checksum": migrationRecord.checksum,
-				"appliedAt": getTimestamp(),
-			}
-			self.backend.setMetadata(MIGRATIONS_METADATA_KEY, self.records)
-			if hasattr(self.backend, "sync"):
-				self.backend.sync()
+		token = _MIGRATION_EXECUTION_DEPTH.set(_MIGRATION_EXECUTION_DEPTH.get() + 1)
+		try:
+			for migrationRecord in self.pending():
+				module = _loadMigrationModule(migrationRecord)
+				apply = getattr(module, "apply", None)
+				if not callable(apply):
+					raise RuntimeError(
+						"Migration does not define apply(storage): %s" % migrationRecord.path
+					)
+				if getattr(apply, "USES_MIGRATION_CONTEXT", False):
+					context = MigrationContext(self.storage, self.backend, migrationRecord)
+					apply(context)
+					context.clear()
+				else:
+					apply(self.storage)
+				self.records[migrationRecord.key] = {
+					"id": migrationRecord.id,
+					"name": migrationRecord.name,
+					"filename": migrationRecord.filename,
+					"path": migrationRecord.path,
+					"checksum": migrationRecord.checksum,
+					"appliedAt": getTimestamp(),
+				}
+				self.backend.setMetadata(MIGRATIONS_METADATA_KEY, self.records)
+				if hasattr(self.backend, "sync"):
+					self.backend.sync()
+		finally:
+			_MIGRATION_EXECUTION_DEPTH.reset(token)
 		return self.records
 
 	def getSchemaChanges(self, migrationRecord: Migration) -> list[dict]:

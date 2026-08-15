@@ -479,11 +479,3 @@ class RelationWebMixin:
 				handler, ("GET", path + "/list/{start:int}:{end:int}" + suffix)
 			)
 		yield self._handler(operate, ("POST", path + "/{operation:segment}"))
-
-
-def __getattr__(name):
-	if name == "StorageServer":
-		from .server import StorageServer
-
-		return StorageServer
-	raise AttributeError(name)

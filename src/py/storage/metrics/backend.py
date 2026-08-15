@@ -2,8 +2,8 @@
 
 import json
 
-from .backends.fs import DirectoryBackend
-from .core import NOTHING
+from ..backends.fs import DirectoryBackend
+from ..core import NOTHING
 
 
 class MetricsDirectoryBackend(DirectoryBackend):

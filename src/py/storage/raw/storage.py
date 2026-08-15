@@ -4,8 +4,8 @@ import base64
 import threading
 import weakref
 
-from .core import Storable, asPrimitive, getCanonicalName
-from .raw_model import StoredRaw, _coerceCacheKey
+from ..core import Storable, asPrimitive, getCanonicalName
+from .model import StoredRaw, _coerceCacheKey
 
 
 class RawStorage:

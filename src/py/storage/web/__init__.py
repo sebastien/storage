@@ -2,6 +2,7 @@
 
 from .channels import StorageChannel as StorageChannel
 from .server import (
+	ObjectWebMixin as ObjectWebMixin,
 	RelationWebMixin as RelationWebMixin,
 	StorageDecoration as StorageDecoration,
 	StorageServer as StorageServer,
@@ -12,6 +13,7 @@ from .server import (
 __all__ = [
 	"StorageChannel",
 	"StorageDecoration",
+	"ObjectWebMixin",
 	"RelationWebMixin",
 	"StorageServer",
 	"StorageWebError",
