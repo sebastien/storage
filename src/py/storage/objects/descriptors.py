@@ -109,8 +109,8 @@ class InverseRelation:
 class Relation:
 	"""A lazily loaded one-to-many or single-value object relation."""
 
-	def __init__(self, parentClass, definition):
-		self.parentClass = parentClass
+	def __init__(self, parent, definition):
+		self.parent = parent
 		self.definition = definition
 		self.values = None
 
@@ -122,7 +122,7 @@ class Relation:
 			raise TypeError("InverseRelation has no stored order; set the child foreign key")
 
 	def _parent(self):
-		parent = self.parentClass
+		parent = self.parent
 		if isinstance(parent, type):
 			raise RuntimeError("InverseRelation requires a stored object instance")
 		return parent

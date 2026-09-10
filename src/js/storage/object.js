@@ -525,6 +525,12 @@ class StoredRelation {
 		this.state.revision = revision
 		this.state.loaded = true
 		this.emitChange(before, direction)
+		this.bridge.subscribeLive({
+			kind: "relation",
+			type: this.owner.routeType,
+			id: this.owner.id,
+			name: this.name,
+		})
 		return this
 	}
 
@@ -682,7 +688,7 @@ class StoredQuery {
 	constructor(bridge, type, options = {}) {
 		this.bridge = bridge
 		this.type = bridge.routeType(type)
-		this.owner = options.owner
+		this.owner = "owner" in options ? options.owner : bridge.owner
 		this.state = {
 			values: [],
 			loaded: false,
@@ -733,18 +739,22 @@ class StoredQuery {
 		}
 	}
 
+	listOptions() {
+		return this.owner != null && this.owner !== "" ? { owner: this.owner } : {}
+	}
+
 	async sync(options = {}) {
 		this.bridge.trackQuery(this)
 		if (this.state.loaded && !options.refresh) {
 			return this
 		}
-		if (!this.bridge.live || !this.bridge.EventSource) {
-			const values = await this.bridge.list(
-				this.type,
-				this.owner ? { owner: this.owner } : {},
-			)
+		const listSnapshot = async () => {
+			const values = await this.bridge.list(this.type, this.listOptions())
 			this.applySnapshot({ values })
 			return this
+		}
+		if (!this.bridge.live || !this.bridge.EventSource) {
+			return await listSnapshot()
 		}
 		const useSnapshot = options.snapshot !== false
 		if (useSnapshot) {
@@ -755,9 +765,13 @@ class StoredQuery {
 				snapshot: useSnapshot,
 			})
 			return useSnapshot ? await this._syncPromise : this
-		} catch (error) {
-			this.failSync(error)
-			throw error
+		} catch (_error) {
+			try {
+				return await listSnapshot()
+			} catch (fallbackError) {
+				this.failSync(fallbackError)
+				throw fallbackError
+			}
 		}
 	}
 
@@ -769,6 +783,11 @@ class StoredQuery {
 			this._resolveSync = resolve
 			this._rejectSync = reject
 		})
+		// A query can be tracked without anything awaiting the sync promise
+		// (for example when a live subscription fails and sync() falls back to
+		// list()). Keep a rejection handler attached so a later failSync() does
+		// not surface as an unhandled rejection.
+		this._syncPromise.catch(() => {})
 		return this._syncPromise
 	}
 
@@ -889,7 +908,10 @@ class StoredQuery {
 
 	emitChange(before, change, direction) {
 		if (this.bridge._hold > 0) {
-			this._held = true
+			if (!this._held) {
+				this._heldBefore = before
+				this._held = true
+			}
 			return this
 		}
 		const after = this.snapshot()
@@ -901,8 +923,10 @@ class StoredQuery {
 
 	flushHeld() {
 		if (!this._held) return this
+		const before = this._heldBefore
 		this._held = false
-		return this.emitChange(this.snapshot(), { kind: "refresh" }, "local")
+		this._heldBefore = undefined
+		return this.emitChange(before, { kind: "refresh" }, "local")
 	}
 }
 
@@ -956,6 +980,10 @@ class StoredObjectBridge {
 		this.liveRetryMaxDelay = options.liveRetryMaxDelay === undefined ? DEFAULT_LIVE_RETRY_MAX_DELAY : options.liveRetryMaxDelay
 		this.liveHeartbeat = options.liveHeartbeat === undefined ? DEFAULT_LIVE_HEARTBEAT : options.liveHeartbeat
 		this.EventSource = options.EventSource || globalThis.EventSource
+		this.credentials = options.credentials === undefined ? "include" : options.credentials
+		if ("owner" in options) {
+			this.owner = options.owner
+		}
 		this._options = this.optionsSnapshot(options)
 		this.schedulePush()
 		if (!this.live) {
@@ -1126,12 +1154,12 @@ class StoredObjectBridge {
 		}
 		const key = this.cacheKey(object.routeType, object.id)
 		this.liveObjects.set(key, object)
-		this.subscribeLive({ kind: "object", type: object.routeType, id: object.id })
+		this.subscribeLive(this.liveTarget({ kind: "object", type: object.routeType, id: object.id }))
 		const fields = object.fields.toJSON()
 		this.trackReferences(fields)
 		for (const [name, value] of Object.entries(fields)) {
 			if (this.objectReferences(value).length) {
-				this.subscribeLive({ kind: "relation", type: object.routeType, id: object.id, name })
+				this.subscribeLive(this.liveTarget({ kind: "relation", type: object.routeType, id: object.id, name }))
 			}
 		}
 		return object
@@ -1142,7 +1170,7 @@ class StoredObjectBridge {
 			const type = this.routeType(ref.type)
 			const key = this.cacheKey(type, ref.id)
 			if (!this.liveObjects.has(key)) {
-				this.subscribeLive({ kind: "object", type, id: ref.id })
+				this.subscribeLive(this.liveTarget({ kind: "object", type, id: ref.id }))
 			}
 		}
 		return this
@@ -1179,10 +1207,18 @@ class StoredObjectBridge {
 		return found
 	}
 
+	liveTarget(target) {
+		if (!target || target.owner != null || this.owner == null) {
+			return target
+		}
+		return { ...target, owner: this.owner }
+	}
+
 	subscribeLive(target, options = {}) {
 		if (!this.live || !this.EventSource) {
 			return Promise.resolve(undefined)
 		}
+		target = this.liveTarget(target)
 		const key = JSON.stringify(target)
 		if (this.liveSubscriptions.has(key)) {
 			return this.connectLive().then(() => {
@@ -1231,8 +1267,10 @@ class StoredObjectBridge {
 			this.liveSource.close()
 		}
 		const events = channel.events || `${this.livePath}/${channel.id}/events`
-		this.liveSource = new this.EventSource(this.url(events))
-		for (const name of ["create", "update", "remove", "batch", "snapshot", "query"]) {
+		this.liveSource = new this.EventSource(this.url(events), {
+			withCredentials: this.credentials === "include",
+		})
+		for (const name of ["create", "update", "remove", "relation", "batch", "snapshot", "query"]) {
 			this.liveSource.addEventListener(name, (event) => this.onLiveEvent(name, event))
 		}
 		this.liveSource.addEventListener("ping", () => this.scheduleLiveHeartbeat())
@@ -1727,19 +1765,8 @@ class StoredObjectBridge {
 		}
 	}
 
-	cachedQueries(type, data) {
-		const routeType = this.routeType(type)
-		const matches = []
-		for (const query of this.queries.values()) {
-			if (this.routeType(query.type) !== routeType) continue
-			if (this.queryMatchesDelta(query, data)) matches.push(query)
-		}
-		return matches
-	}
-
 	queryMatchesDelta(query, data) {
 		if (query.owner == null || query.owner === "") return true
-		if (data?.change === "removed") return true
 		const value = data?.value
 		const owner =
 			value && typeof value === "object" && !Array.isArray(value) && value.owner !== undefined
@@ -1750,7 +1777,30 @@ class StoredObjectBridge {
 	}
 
 	applyQueryDelta(type, data) {
-		for (const query of this.cachedQueries(type, data)) query.applyDelta(data)
+		const routeType = this.routeType(type)
+		for (const query of this.queries.values()) {
+			if (this.routeType(query.type) !== routeType) continue
+			const inQuery = query.indexOfKey(query.objectKey(data)) !== -1
+			if (data?.change === "removed") {
+				if (inQuery) query.applyDelta(data)
+				continue
+			}
+			if (query.owner == null || query.owner === "") {
+				query.applyDelta(data)
+				continue
+			}
+			const matches = this.queryMatchesDelta(query, data)
+			if (matches && inQuery) {
+				query.applyDelta(data)
+			} else if (matches && !inQuery) {
+				query.applyDelta({
+					...data,
+					change: data.change === "updated" ? "added" : data.change,
+				})
+			} else if (!matches && inQuery) {
+				query.applyDelta({ ...data, change: "removed" })
+			}
+		}
 		return this
 	}
 
@@ -1819,8 +1869,9 @@ class StoredObjectBridge {
 		const start = options.start || 0
 		const count = options.count || DEFAULT_PAGE_SIZE
 		const end = options.end === undefined ? start + count : options.end
+		const owner = options.owner !== undefined ? options.owner : this.owner
 		const query =
-			options.owner !== undefined ? `?${this.queryString({ owner: options.owner })}` : ""
+			owner != null && owner !== "" ? `?${this.queryString({ owner })}` : ""
 		const data = await this.request("GET", `${this.typePath(type)}/list/${start}:${end}${query}`)
 		return {
 			start: data.start,
@@ -1934,6 +1985,7 @@ class StoredObjectBridge {
 		const init = {
 			method,
 			headers: { Accept: "application/json" },
+			credentials: this.credentials,
 		}
 		if (body !== undefined) {
 			init.headers["Content-Type"] = "application/json"
@@ -2083,6 +2135,8 @@ class StoredObjectBridge {
 			liveRetryMaxDelay: options.liveRetryMaxDelay === undefined ? DEFAULT_LIVE_RETRY_MAX_DELAY : options.liveRetryMaxDelay,
 			liveHeartbeat: options.liveHeartbeat === undefined ? DEFAULT_LIVE_HEARTBEAT : options.liveHeartbeat,
 			EventSource: options.EventSource || globalThis.EventSource,
+			credentials: options.credentials === undefined ? "include" : options.credentials,
+			owner: options.owner,
 		}
 	}
 

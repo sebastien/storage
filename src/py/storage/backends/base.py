@@ -110,15 +110,24 @@ class StorageBackend:
 		raise NotImplementedError
 
 	@staticmethod
-	def matchesPrefix(key, prefix) -> bool:
+	def matchesPrefix(key, prefix, delimiter=".") -> bool:
 		if prefix is None:
 			return True
 		if isinstance(prefix, (tuple, list)):
-			return any(StorageBackend.matchesPrefix(key, item) for item in prefix)
+			return any(
+				StorageBackend.matchesPrefix(key, item, delimiter=delimiter)
+				for item in prefix
+			)
 		key, prefix = str(key), str(prefix)
 		if not key.startswith(prefix):
 			return False
-		return len(key) == len(prefix) or prefix.endswith(".") or key[len(prefix)] == "."
+		if not delimiter:
+			return True
+		return (
+			len(key) == len(prefix)
+			or prefix.endswith(delimiter)
+			or key.startswith(prefix + delimiter)
+		)
 
 	def getMetadata(self, key=None, default=None):
 		raise NotImplementedError

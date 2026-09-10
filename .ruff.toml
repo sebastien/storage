@@ -1,1 +1,20 @@
-deps/sdk/etc/_ruff.toml
+# Project-level Ruff configuration.
+#
+# Ruff resolves `.ruff.toml` before `ruff.toml`/`pyproject.toml`, so this file
+# replaces the shared SDK symlink and must stay self-contained (formatting
+# included). An explicit `select` keeps linting stable across Ruff releases:
+# newer versions ship a broader default rule set that flags intentional project
+# conventions such as `typing.List`/`Optional`, `%` formatting, and `dict()`.
+line-length = 88
+indent-width = 4
+
+[format]
+quote-style = "double"
+indent-style = "tab"
+
+
+[lint]
+select = ["E", "F"]
+ignore = ["W191", "E501"]
+
+# EOF

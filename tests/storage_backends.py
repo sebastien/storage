@@ -412,6 +412,16 @@ class DBMBackendTest(AbstractBackendTest, unittest.TestCase):
 		self.assertListEqual(["User.1", "User.2"], sorted(self.backend.keys("User")))
 
 
+class PrefixMatchTest(unittest.TestCase):
+	def testCollectionVsStartswith(self):
+		match = storage.MemoryBackend.matchesPrefix
+		self.assertTrue(match("User.1", "User"))
+		self.assertFalse(match("UserProfile.1", "User"))
+		self.assertFalse(match("user:1", "user"))
+		self.assertTrue(match("user:1", "user", delimiter=""))
+		self.assertTrue(match("user:1", "user:", delimiter=""))
+
+
 # -----------------------------------------------------------------------------
 #
 # SQLITE BACKEND TEST

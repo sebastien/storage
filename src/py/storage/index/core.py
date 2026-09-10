@@ -79,8 +79,15 @@ class Indexes:
 				continue
 			if not hasattr(c, "INDEX_BY"):
 				continue
+			if "INDEX_FOR" not in c.__dict__:
+				c.INDEX_FOR = {}
 			path = self.prefix + getCanonicalName(c)
 			for indexed_property, indexing_function in list(c.INDEX_BY.items()):
+				previous = c.INDEX_FOR.get(indexed_property)
+				if previous and any(
+					index is previous and cls is c for index, cls in self.indexes
+				):
+					continue
 				index_path = path + "." + indexed_property
 				# FIXME: Should provide a single backend for both forward and backward, no?
 				storage = IndexStorage(
@@ -91,9 +98,6 @@ class Indexes:
 					indexed_property, indexing_function, c
 				)
 				index = Index(storage, extractor=extractor, restorer=restorer)
-				if "INDEX_FOR" not in c.__dict__:
-					c.INDEX_FOR = {}
-				previous = c.INDEX_FOR.get(indexed_property)
 				if previous:
 					if "INDEXES" in c.__dict__ and previous in c.INDEXES:
 						c.INDEXES.remove(previous)

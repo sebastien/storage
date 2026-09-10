@@ -432,9 +432,8 @@ class KVSqliteBackend(StorageBackend):
 			query += " ORDER BY key DESC"
 		with self._lock:
 			rows = list(self._conn().execute(query))
-		prefix = collection[0] if isinstance(collection, (tuple, list)) and collection else collection
 		for row in rows:
-			if prefix is None or self.matchesPrefix(row[0], prefix):
+			if self.matchesPrefix(row[0], collection):
 				yield row[0]
 
 	def count(self, key=None) -> int:

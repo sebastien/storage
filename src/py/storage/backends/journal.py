@@ -174,6 +174,8 @@ class JournalBackend(StorageBackend):
 		self.HAS_RAW = backend.HAS_RAW
 		self.HAS_ORDERING = backend.HAS_ORDERING
 		self._deferredBatches = []
+		self._inverseCache = {}
+		self._inverseCacheStamp = None
 
 	def beginBatch(self):
 		batch = dict(entries=[])
@@ -322,7 +324,7 @@ class JournalBackend(StorageBackend):
 			entry["relations"] = relations
 		self.persistence.append(entry)
 		self._deferOrNotify(entry)
-		self._notifyInverseRelations(operation, old, new, entry)
+		self._notifyInverseRelations(operation, old, new)
 		self._compactIfNeeded(key)
 		return entry
 
@@ -474,6 +476,16 @@ class JournalBackend(StorageBackend):
 		from ..core import Storable, getCanonicalName
 		from ..objects.descriptors import InverseRelation
 
+		# Classes are declared once per name (see Storable.DeclareClass), so the
+		# declared-class count is a cheap stamp to invalidate the cache when new
+		# storable classes appear.
+		stamp = len(Storable.DECLARED_CLASSES)
+		if self._inverseCacheStamp != stamp:
+			self._inverseCache = {}
+			self._inverseCacheStamp = stamp
+		cached = self._inverseCache.get(child_type)
+		if cached is not None:
+			return cached
 		bindings = []
 		for cls in Storable.DECLARED_CLASSES.values():
 			relations = getattr(cls, "RELATIONS", {}) or {}
@@ -490,9 +502,10 @@ class JournalBackend(StorageBackend):
 					and getCanonicalName(definition.target) == child_type
 				):
 					bindings.append((cls, name, definition.field))
+		self._inverseCache[child_type] = bindings
 		return bindings
 
-	def _notifyInverseRelations(self, operation, old, new, source_entry):
+	def _notifyInverseRelations(self, operation, old, new):
 		payload = new if isinstance(new, dict) else old
 		if not isinstance(payload, dict):
 			return
@@ -507,21 +520,48 @@ class JournalBackend(StorageBackend):
 			new_fk = None if removed_all else (new.get(field) if isinstance(new, dict) else None)
 			if old_fk == new_fk:
 				continue
-			partition = payload.get("partition") or payload.get("owner")
 			if old_fk:
 				self._notifyInverseParent(
-					parent_cls, old_fk, partition, name, source_entry, removed=[ref]
+					parent_cls, old_fk, payload, name, removed=[ref]
 				)
 			if new_fk:
 				self._notifyInverseParent(
-					parent_cls, new_fk, partition, name, source_entry, added=[ref]
+					parent_cls, new_fk, payload, name, added=[ref]
 				)
 
-	def _notifyInverseParent(self, parent_cls, parent_id, partition, name, source_entry, added=None, removed=None):
-		entry = dict(source_entry)
-		entry["key"] = parent_cls.StorageKey(parent_id, partition=partition, owner=partition)
-		entry["relations"] = {name: {"added": added or [], "removed": removed or []}}
+	def _parentStorageKey(self, parent_cls, parent_id, payload):
+		ownership = parent_cls.GetOwnership() if hasattr(parent_cls, "GetOwnership") else None
+		if not ownership:
+			return parent_cls.StorageKey(parent_id)
+		kwargs = {}
+		owner = payload.get("owner") if isinstance(payload, dict) else None
+		partition = payload.get("partition") if isinstance(payload, dict) else None
+		if owner is not None:
+			kwargs["owner"] = owner
+		if partition is not None:
+			kwargs["partition"] = partition
+		return parent_cls.StorageKey(parent_id, **kwargs)
+
+	def _notifyInverseParent(self, parent_cls, parent_id, payload, name, added=None, removed=None):
+		from ..core import getCanonicalName
+
+		parent_key = self._parentStorageKey(parent_cls, parent_id, payload)
+		entry = {
+			"seq": self.persistence.nextSeq(),
+			"time": getTimestamp(),
+			"operation": Operation.RELATION.value,
+			"key": parent_key,
+			"kind": "relation",
+			"patch": [],
+			"meta": {
+				"objectID": parent_id,
+				"objectType": getCanonicalName(parent_cls),
+			},
+			"relations": {name: {"added": added or [], "removed": removed or []}},
+		}
+		self.persistence.append(entry)
 		self._deferOrNotify(entry)
+		self._compactIfNeeded(parent_key)
 
 	def _relations(self, old, new):
 		if not isinstance(old, dict) or not isinstance(new, dict):

@@ -8,8 +8,7 @@
 # Last mod  : 03-Oct-2013
 # -----------------------------------------------------------------------------
 
-import unittest, os, shutil, sys, json, random
-import glob
+import unittest, os, shutil, sys, json, random, tempfile
 from storage import DirectoryBackend, DBMBackend, MemoryBackend, Types
 from storage.objects import StoredObject, ObjectStorage
 from storage.index import Index, IndexStorage
@@ -36,12 +35,6 @@ def noneIfEmpty(v):
 			return noneIfEmpty(tuple(v))
 	else:
 		return None
-
-
-def _removeDBMFiles(path):
-	for candidate in glob.glob(path + "*"):
-		if os.path.isfile(candidate):
-			os.unlink(candidate)
 
 
 class Value(StoredObject):
@@ -174,9 +167,11 @@ class DBMStorageTest(unittest.TestCase):
 	"""Test the persistence of the index when using theDBM backend"""
 
 	def setUp(self):
-		self.clean()
+		self.path = tempfile.mkdtemp(prefix="storage-index-")
+		self.fwd = os.path.join(self.path, "index-fwd")
+		self.bwd = os.path.join(self.path, "index-bwd")
 		self.indexStorage = IndexStorage(
-			DBMBackend("index-fwd"), DBMBackend("index-bwd")
+			DBMBackend(self.fwd), DBMBackend(self.bwd)
 		)
 		self.index = Index(self.indexStorage, Value.ByValue, lambda _: _)
 		self.values = []
@@ -191,7 +186,7 @@ class DBMStorageTest(unittest.TestCase):
 
 	def testAccess(self):
 		new_index_storage = IndexStorage(
-			DBMBackend("index-fwd"), DBMBackend("index-bwd")
+			DBMBackend(self.fwd), DBMBackend(self.bwd)
 		)
 		new_index = Index(new_index_storage, Value.ByValue, lambda _: _)
 		# We make sure that we can access the index
@@ -200,6 +195,8 @@ class DBMStorageTest(unittest.TestCase):
 		)
 		for i in range(10):
 			self.assertEqual(_len(new_index.get(i)), 10)
+		new_index_storage.forwardBackend.close()
+		new_index_storage.backwardBackend.close()
 
 	def testUpdate(self):
 		for v in self.values:
@@ -214,11 +211,11 @@ class DBMStorageTest(unittest.TestCase):
 		self.indexStorage.sync()
 		self.indexStorage.forwardBackend.close()
 		self.indexStorage.backwardBackend.close()
-		self.clean()
+		shutil.rmtree(self.path)
 
 	def testUpdateSync(self):
 		new_index_storage = IndexStorage(
-			DBMBackend("index-fwd"), DBMBackend("index-bwd")
+			DBMBackend(self.fwd), DBMBackend(self.bwd)
 		)
 		new_index = Index(new_index_storage, Value.ByValue, lambda _: _)
 		# Tests the new index (same as testAccess)
@@ -242,11 +239,8 @@ class DBMStorageTest(unittest.TestCase):
 		self.assertEqual(_len(new_index.get(0)), 100)
 		for i in range(1, 10):
 			self.assertIsNone(noneIfEmpty(new_index.get(i)))
-
-	def clean(self):
-		for f in ("index-fwd.dbm", "index-bwd.dbm"):
-			_removeDBMFiles(f)
-			assert not glob.glob(f + "*")
+		new_index_storage.forwardBackend.close()
+		new_index_storage.backwardBackend.close()
 
 
 #

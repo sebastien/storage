@@ -215,6 +215,70 @@ class SchemaTest(unittest.TestCase):
 			)
 		)
 
+	def testAddClassDoesNotReplaceExistingClass(self):
+		SchemaUser = self.makeClass("SchemaUser", PROPERTIES=dict(name=Types.STRING))
+		current = Schema.FromClasses([SchemaUser])
+		className = self.className(SchemaUser)
+		schema = current.clone()
+		schema.classes[className]["properties"]["extra"] = {"type": "str"}
+		schema.applyChange({"op": "addClass", "class": className, "schema": current})
+		self.assertIn("extra", schema.classes[className]["properties"])
+		validator = SchemaValidator(ObjectStorage(MemoryBackend()).use(SchemaUser))
+		self.assertTrue(
+			validator._isChangeApplied(
+				schema, {"op": "addClass", "class": className, "schema": current}
+			)
+		)
+
+	def testAddClassMergesMissingProperties(self):
+		SchemaUser = self.makeClass("SchemaUser", PROPERTIES=dict(name=Types.STRING))
+		current = Schema.FromClasses([SchemaUser])
+		className = self.className(SchemaUser)
+		schema = Schema()
+		schema.classes[className] = {"properties": {}, "relations": {}}
+		schema.applyChange({"op": "addClass", "class": className, "schema": current})
+		self.assertIn("name", schema.classes[className]["properties"])
+		validator = SchemaValidator(ObjectStorage(MemoryBackend()).use(SchemaUser))
+		self.assertTrue(
+			validator._isChangeApplied(
+				schema, {"op": "addClass", "class": className, "schema": current}
+			)
+		)
+
+	def testAddClassNotAppliedWhenPropertyMissing(self):
+		SchemaUser = self.makeClass("SchemaUser", PROPERTIES=dict(name=Types.STRING))
+		current = Schema.FromClasses([SchemaUser])
+		className = self.className(SchemaUser)
+		schema = Schema()
+		schema.classes[className] = {"properties": {}, "relations": {}}
+		validator = SchemaValidator(ObjectStorage(MemoryBackend()).use(SchemaUser))
+		self.assertFalse(
+			validator._isChangeApplied(
+				schema, {"op": "addClass", "class": className, "schema": current}
+			)
+		)
+
+	def testAddClassNotAppliedWhenCollectionMissing(self):
+		SchemaUser = self.makeClass(
+			"SchemaUser", COLLECTION="users", PROPERTIES=dict(name=Types.STRING)
+		)
+		current = Schema.FromClasses([SchemaUser])
+		className = self.className(SchemaUser)
+		schema = Schema()
+		schema.classes[className] = {
+			"type": className,
+			"properties": {"name": {"type": "str"}},
+			"relations": {},
+		}
+		validator = SchemaValidator(ObjectStorage(MemoryBackend()).use(SchemaUser))
+		self.assertFalse(
+			validator._isChangeApplied(
+				schema, {"op": "addClass", "class": className, "schema": current}
+			)
+		)
+		schema.applyChange({"op": "addClass", "class": className, "schema": current})
+		self.assertEqual("users", schema.classes[className]["collection"])
+
 	def testChangeCollectionMigration(self):
 		SchemaUserFrom = self.makeClass(
 			"SchemaUser", COLLECTION="users", PROPERTIES=dict(name=Types.STRING)

@@ -5,6 +5,7 @@ import unittest
 from storage import DirectoryBackend, JournalBackend, Types
 from storage.index import Indexes, Indexing
 from storage.objects import InverseRelation, ObjectStorage, StoredObject
+from storage.query import StoredQuery
 
 
 
@@ -18,6 +19,31 @@ class InverseParent(StoredObject):
 	COLLECTION = "inverse-parent"
 	PROPERTIES = dict(name=Types.STRING)
 	RELATIONS = lambda _: dict(children=InverseRelation(InverseChild, "parentId"))
+
+
+class InverseOwner(StoredObject):
+	COLLECTION = "inverse-owner"
+	PROPERTIES = dict(name=Types.STRING)
+
+
+class InverseOwnedChild(StoredObject):
+	COLLECTION = "inverse-owned-child"
+	OWNERSHIP = lambda: InverseOwner.Owns(required=True)
+	PROPERTIES = dict(parentId=Types.STRING, title=Types.STRING)
+	INDEX_BY = dict(parentId=Indexing.Value)
+
+
+class InverseOwnedParent(StoredObject):
+	COLLECTION = "inverse-owned-parent"
+	OWNERSHIP = lambda: InverseOwner.Owns(required=True)
+	PROPERTIES = dict(name=Types.STRING)
+	RELATIONS = lambda _: dict(children=InverseRelation(InverseOwnedChild, "parentId"))
+
+
+class InversePartitionChild(StoredObject):
+	COLLECTION = "inverse-part-child"
+	PROPERTIES = dict(parentId=Types.STRING, title=Types.STRING)
+	INDEX_BY = dict(parentId=Indexing.Value)
 
 
 class InverseRelationTest(unittest.TestCase):
@@ -99,6 +125,26 @@ class InverseRelationTest(unittest.TestCase):
 		]
 		self.assertTrue(added)
 		self.assertEqual(child.id, added[0][0]["id"])
+		self.assertEqual("relation", seen[-1]["operation"])
+		self.assertEqual(parent.getStorageKey(), seen[-1]["key"])
+		self.assertIsNone(StoredQuery(InverseParent).eventFor(seen[-1], self.objects.backend))
+		relation_entries = [
+			entry
+			for entry in self.objects.backend.persistence.getEntries(
+				keys=parent.getStorageKey()
+			)
+			if entry.get("operation") == "relation"
+		]
+		self.assertEqual(1, len(relation_entries))
+		child_entries = [
+			entry
+			for entry in self.objects.backend.persistence.getEntries(
+				keys=child.getStorageKey()
+			)
+			if entry.get("operation") != "relation"
+		]
+		self.assertTrue(child_entries)
+		self.assertNotEqual(relation_entries[0]["seq"], child_entries[-1]["seq"])
 
 	def testAssignmentWritesForeignKey(self):
 		parent = InverseParent(name="p").save()
@@ -115,12 +161,34 @@ class InverseRelationTest(unittest.TestCase):
 		self.assertEqual(1, len(matching))
 		self.assertIs(matching[0], InverseChild.IndexFor("parentId"))
 
+	def testParentStorageKeyUsesPartitionWhenOwnerMissing(self):
+		payload = {"partition": "ACC-1", "id": "C1", "type": "inverse-part-child"}
+		key = self.objects.backend._parentStorageKey(
+			InverseOwnedParent, "P1", payload
+		)
+		self.assertEqual(
+			InverseOwnedParent.StorageKey("P1", partition="ACC-1"), key
+		)
+		payload = {"owner": "ACC-2", "id": "C1", "type": "inverse-owned-child"}
+		key = self.objects.backend._parentStorageKey(
+			InverseOwnedParent, "P1", payload
+		)
+		self.assertEqual(InverseOwnedParent.StorageKey("P1", owner="ACC-2"), key)
+		key = self.objects.backend._parentStorageKey(
+			InverseParent, "P1", {"partition": "ACC-1"}
+		)
+		self.assertEqual(InverseParent.StorageKey("P1"), key)
+
 	def testWebExportIncludesChildren(self):
 		parent = InverseParent(name="p").save()
 		child = InverseChild(parentId=parent.id, title="one").save()
 		exported = parent.export(target="web")
 		self.assertEqual(child.id, exported["children"][0]["id"])
 		self.assertNotIn("children", parent.export())
+		self.assertEqual(
+			child.id, parent.exportWith("children", target="web")["children"][0]["id"]
+		)
+		self.assertNotIn("children", parent.exportWith("children"))
 
 
 if __name__ == "__main__":

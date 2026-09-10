@@ -15,7 +15,7 @@ except ImportError:
 	from extra import HTTPRequest, HTTPResponse, Service
 	from extra.routing import Handler
 
-from ..core import restore
+from ..core import Operation, restore
 from ..raw import StoredRaw
 from ..query import StoredQuery
 from .channels import StorageChannel
@@ -769,6 +769,24 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 				channel.close()
 		return self
 
+	def journalTargetKey(self, storableClass, target):
+		"""Returns the storage key addressed by an object/relation channel target.
+
+		Owned types store objects under an owner bucket, so the target owner must
+		be part of the key for live subscriptions to match journal entries. The
+		owner is only applied when the class declares ownership; partition always
+		wins when explicitly provided.
+		"""
+		ownership = storableClass.GetOwnership() if hasattr(storableClass, "GetOwnership") else None
+		owner = target.get("owner")
+		partition = target.get("partition")
+		kwargs = {}
+		if partition not in (None, ""):
+			kwargs["partition"] = partition
+		elif ownership and owner not in (None, ""):
+			kwargs["owner"] = owner
+		return storableClass.StorageKey(str(target.get("id")), **kwargs)
+
 	def resolveJournalTarget(self, target):
 		if not isinstance(target, dict):
 			return None, StorageWebError(
@@ -810,7 +828,7 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 				)
 			return dict(
 				backend=backend,
-				key=storableClass.StorageKey(str(target.get("id"))),
+				key=self.journalTargetKey(storableClass, target),
 				target=target,
 				info=info,
 			), None
@@ -832,7 +850,7 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 				)
 			return dict(
 				backend=backend,
-				key=storableClass.StorageKey(str(target.get("id"))),
+				key=self.journalTargetKey(storableClass, target),
 				target=target,
 				info=info,
 			), None
@@ -888,10 +906,12 @@ class ObjectWebMixin(KVWebMixin, StorageFormatting, Service):
 		meta = entry.get("meta") or {}
 		operation = entry.get("operation")
 		name = "update"
-		if operation == "-":
+		if operation == Operation.REMOVE.value:
 			name = "remove"
-		elif operation == "+":
+		elif operation == Operation.ADD.value:
 			name = "create"
+		elif operation == Operation.RELATION.value:
+			name = "relation"
 		return dict(
 			event=name,
 			seq=entry.get("seq"),

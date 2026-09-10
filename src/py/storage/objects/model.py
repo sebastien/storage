@@ -877,7 +877,9 @@ class StoredObject(Storable):
 		self.onRestore()
 		# print "[DEBUG] Setting state for", self.id, "|", self.__class__.__name__,  "|",  self
 
-	def exportWith(self, *keys: str, depth: int = 1):
+	def exportWith(self, *keys: str, depth: int = 1, **options):
+		"""Exports only the given keys. Accepts the same `target` option as
+		`export()`; inverse relations are only included when `target="web"`."""
 		res: dict[str, TPrimitive] = {}
 		for key in keys:
 			if key == "id":
@@ -889,7 +891,10 @@ class StoredObject(Storable):
 				if value is not None:
 					res[key] = asPrimitive(value, depth=depth - 1)
 			elif key in self.RELATIONS:
-				if isinstance(self.RELATIONS[key], InverseRelation):
+				if (
+					isinstance(self.RELATIONS[key], InverseRelation)
+					and options.get("target") != "web"
+				):
 					continue
 				relation = getattr(self, key)
 				res[key] = asPrimitive(relation, depth=depth - 1)

@@ -173,6 +173,8 @@ POST /api/channel/{channelId}/commands
 }
 ```
 
+For owner-scoped types, include `owner` (or `partition`) in object and relation targets so the channel resolves the owner-bucketed storage key. Query targets already require `owner`.
+
 ### 3. Buffering and Flow Control
 
 Control delivery buffering for a channel:
@@ -204,6 +206,30 @@ Control delivery buffering for a channel:
   },
   "target": {"kind": "object", "type": "items", "id": "123"},
   "value": {"id": "123", "name": "New Item Name"}
+}
+```
+
+#### Relation Event (`relation`)
+
+Emitted when a child foreign key change affects an inverse relation on a parent object:
+
+```json
+{
+  "event": "relation",
+  "seq": 13,
+  "operation": "relation",
+  "key": "articles.0.123",
+  "type": "Article",
+  "id": "123",
+  "patch": [],
+  "relations": {
+    "comments": {
+      "added": [{"id": "9", "type": "Comment"}],
+      "removed": []
+    }
+  },
+  "target": {"kind": "relation", "type": "articles", "id": "123", "name": "comments"},
+  "value": {"id": "123", "type": "Article"}
 }
 ```
 
@@ -376,6 +402,13 @@ for await (const entry of cache.iitems({ prefix: "user:" })) {
 
 await cache.delete("user:123")
 ```
+
+### 4. Bridge Options
+
+`bridge(options)` accepts the following options in addition to `path`, `host`, `port`, `protocol`, `url`, `fetch`, `live`, `livePath`, `autoPush`, and the live retry timings:
+
+* `owner`: Default owner id. Queries created with `query(type)` (no explicit owner) and object/relation live subscriptions inherit it. Passing `{ owner: undefined }` explicitly opts a query out of the default.
+* `credentials`: Fetch credentials mode, `"include"` (default), `"same-origin"`, or `"omit"`. It is passed to every request and controls the `withCredentials` flag of the SSE `EventSource`. Use `"same-origin"` (or `"omit"`) when the API is served from a different origin without credentialed CORS.
 
 ---
 

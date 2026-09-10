@@ -207,6 +207,223 @@ test("transact does not leak creates into other owner queries", async () => {
 	expect(other.values()).toEqual([]);
 });
 
+test("transact flushHeld preserves pre-hold snapshot", async () => {
+	const bridge = new StoredObjectBridge({
+		live: false,
+		fetch: async (url, init = {}) => {
+			if (String(url).includes("/note/list/")) {
+				return new Response(
+					JSON.stringify({ start: 0, end: 0, count: 0, values: [] }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			const body = init.body ? JSON.parse(init.body) : {};
+			const command = body.commands?.[0];
+			return new Response(
+				JSON.stringify({
+					transaction: true,
+					results: [
+						{
+							ok: true,
+							op: "create",
+							type: "note",
+							id: command.id,
+							value: { id: command.id, type: "note", ...command.fields },
+						},
+					],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		},
+	});
+	const notes = bridge.query("note");
+	await notes.sync();
+	const seen = [];
+	notes.sub((_change, _query, _direction, before, after) => {
+		seen.push({
+			before: before.values.map((item) => item.id),
+			after: after.values.map((item) => item.id),
+		});
+	});
+	await bridge.transact([
+		{ op: "create", type: "note", id: "MTNT-1", fields: { meetingId: "MTNG-1" } },
+	]);
+	expect(seen).toHaveLength(1);
+	expect(seen[0].before).toEqual([]);
+	expect(seen[0].after).toEqual(["MTNT-1"]);
+});
+
+test("transact moves object between owner queries", async () => {
+	const bridge = new StoredObjectBridge({
+		live: false,
+		fetch: async (url, init = {}) => {
+			if (String(url).includes("/member/list/")) {
+				return new Response(
+					JSON.stringify({ start: 0, end: 0, count: 0, values: [] }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			const body = init.body ? JSON.parse(init.body) : {};
+			const command = body.commands?.[0];
+			return new Response(
+				JSON.stringify({
+					transaction: true,
+					results: [
+						{
+							ok: true,
+							op: command.op,
+							type: "member",
+							id: command.id,
+							value: {
+								id: command.id,
+								type: "member",
+								...command.fields,
+							},
+						},
+					],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		},
+	});
+	const mine = bridge.query("member", { owner: "ACC-1" });
+	const other = bridge.query("member", { owner: "ACC-2" });
+	await mine.sync();
+	await other.sync();
+	await bridge.transact([
+		{ op: "create", type: "member", id: "MBR-1", fields: { owner: "ACC-1" } },
+	]);
+	await bridge.transact([
+		{ op: "update", type: "member", id: "MBR-1", fields: { owner: "ACC-2" } },
+	]);
+	expect(mine.values()).toEqual([]);
+	expect(other.values().map((item) => item.id)).toEqual(["MBR-1"]);
+});
+
+test("sync live failure still resolves waiters", async () => {
+	let channelAttempts = 0;
+	const bridge = new StoredObjectBridge({
+		live: true,
+		EventSource: class {
+			constructor() {
+				this.addEventListener = () => {};
+			}
+			close() {}
+		},
+		fetch: async (url) => {
+			const path = String(url);
+			if (path.includes("/channel") && !path.includes("/events") && !path.includes("/commands")) {
+				channelAttempts += 1;
+				if (channelAttempts === 1) {
+					return new Response("nope", { status: 500 });
+				}
+				return new Response(
+					JSON.stringify({ id: "ch-1", events: "/api/channel/ch-1/events" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (path.includes("/note/list/")) {
+				return new Response(
+					JSON.stringify({
+						start: 0,
+						end: 0,
+						count: 1,
+						values: [{ id: "N-1", type: "note" }],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			return new Response("{}", { status: 200 });
+		},
+	});
+	const notes = bridge.query("note", { owner: "ACC-1" });
+	const pending = notes.sync();
+	await expect(pending).resolves.toBe(notes);
+	expect(notes.values().map((item) => item.id)).toEqual(["N-1"]);
+	bridge.closeLive();
+});
+
+test("sync live and fallback failure rejects without unhandled rejection", async () => {
+	const bridge = new StoredObjectBridge({
+		live: true,
+		EventSource: class {
+			constructor() {
+				this.addEventListener = () => {};
+			}
+			close() {}
+		},
+		fetch: async (url) => {
+			const path = String(url);
+			if (path.includes("/channel") && !path.includes("/events") && !path.includes("/commands")) {
+				return new Response("nope", { status: 500 });
+			}
+			return new Response("boom", { status: 500 });
+		},
+	});
+	const notes = bridge.query("note", { owner: "ACC-1" });
+	await expect(notes.sync()).rejects.toThrow();
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	bridge.closeLive();
+});
+
+test("unscoped query can subscribe live", async () => {
+	const urls = [];
+	class FakeEventSource {
+		constructor(url, options) {
+			this.url = url;
+			this.options = options;
+			this.listeners = {};
+		}
+		addEventListener(name, handler) {
+			this.listeners[name] = handler;
+		}
+		close() {}
+	}
+	const bridge = new StoredObjectBridge({
+		live: true,
+		EventSource: FakeEventSource,
+		fetch: async (url, init = {}) => {
+			urls.push({ url: String(url), credentials: init.credentials, body: init.body });
+			if (String(url).endsWith("/channel") || /\/channel$/.test(String(url).split("?")[0])) {
+				return new Response(
+					JSON.stringify({ id: "ch-1", events: "/api/channel/ch-1/events" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		},
+	});
+	await bridge.query("note").sync({ snapshot: false });
+	expect(urls.some((item) => item.url.includes("/channel"))).toBe(true);
+	expect(urls.some((item) => item.credentials === "include")).toBe(true);
+	expect(bridge.liveSource.options.withCredentials).toBe(true);
+	expect(typeof bridge.liveSource.listeners.relation).toBe("function");
+	bridge.closeLive();
+});
+
+test("bridge owner scopes queries and list", async () => {
+	const urls = [];
+	const bridge = new StoredObjectBridge({
+		live: false,
+		owner: "ACC-1",
+		fetch: async (url) => {
+			urls.push(String(url));
+			return new Response(
+				JSON.stringify({ start: 0, end: 0, count: 0, values: [] }),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		},
+	});
+	await bridge.query("member").sync();
+	expect(urls.some((url) => url.includes("owner=ACC-1"))).toBe(true);
+	urls.length = 0;
+	await bridge.list("member");
+	expect(urls.some((url) => url.includes("owner=ACC-1"))).toBe(true);
+});
+
 test("prepareCommands prefers command root id", () => {
 	const bridge = new StoredObjectBridge({
 		fetch: async () => new Response("{}", { status: 200 }),

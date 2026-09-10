@@ -24,6 +24,41 @@ def _schemaClassPayload(schema: Any, className: Any) -> dict[str, Any]:
 	return deepcopy(schema) if isinstance(schema, dict) else {}
 
 
+def _mergeClassPayload(stored: dict[str, Any] | None, payload: dict[str, Any] | None) -> dict[str, Any]:
+	result = deepcopy(stored) if stored else {}
+	payload = payload or {}
+	for key in ("type", "collection", "ownership", "indexes"):
+		if result.get(key) in (None, [], {}) and key in payload:
+			result[key] = deepcopy(payload[key])
+	properties = dict(result.get("properties") or {})
+	for name, spec in (payload.get("properties") or {}).items():
+		properties.setdefault(name, deepcopy(spec))
+	relations = dict(result.get("relations") or {})
+	for name, spec in (payload.get("relations") or {}).items():
+		relations.setdefault(name, deepcopy(spec))
+	result["properties"] = properties
+	result["relations"] = relations
+	return result
+
+
+def _classPayloadContains(storedClass: dict[str, Any] | None, payload: dict[str, Any] | None) -> bool:
+	if not storedClass:
+		return False
+	payload = payload or {}
+	for key in ("type", "collection", "ownership", "indexes"):
+		if payload.get(key) not in (None, [], {}) and storedClass.get(key) in (None, [], {}):
+			return False
+	properties = storedClass.get("properties") or {}
+	relations = storedClass.get("relations") or {}
+	for name in payload.get("properties") or {}:
+		if name not in properties:
+			return False
+	for name in payload.get("relations") or {}:
+		if name not in relations:
+			return False
+	return True
+
+
 def _canonicalClassName(value: Any) -> str:
 	if isinstance(value, str):
 		return value
@@ -336,9 +371,12 @@ class Schema:
 		op = change.get("op")
 		className = change.get("class")
 		if op == "addClass":
-			self.classes[className] = _schemaClassPayload(
-				change.get("schema", {}), className
-			)
+			payload = _schemaClassPayload(change.get("schema", {}), className)
+			existing = self.classes.get(className)
+			if existing is None:
+				self.classes[className] = payload
+			else:
+				self.classes[className] = _mergeClassPayload(existing, payload)
 			return self
 		if className not in self.classes:
 			raise RuntimeError(f"Migration change references unknown class: {className}")
@@ -452,8 +490,9 @@ class SchemaValidator:
 		storedClass = schema.classes.get(change.get("class"))
 		op = change.get("op")
 		if op == "addClass":
-			return storedClass == _schemaClassPayload(
-				change.get("schema", {}), change.get("class")
+			return _classPayloadContains(
+				storedClass,
+				_schemaClassPayload(change.get("schema", {}), change.get("class")),
 			)
 		if storedClass is None:
 			return False

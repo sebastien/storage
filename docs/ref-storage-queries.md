@@ -201,6 +201,8 @@ console.log("Current members:", members.values())
 * `bridge.hold()` / `bridge.release()`: Batch query notifications (used by `transact`).
 * `bridge.transact(commands)`: Posts a transactional command batch and applies results to cached queries.
 
+When the bridge is created with an `owner` option, `query(type)` defaults to that owner and both `query.sync()` and `bridge.list()`/`bridge.page()` scope their requests to it. See [Bridge Options](ref-storage-web.md#4-bridge-options).
+
 ---
 
 ## When to Use `StoredQuery`

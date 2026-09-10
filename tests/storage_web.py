@@ -900,6 +900,68 @@ class StorageWebTest(unittest.TestCase):
 
 		asyncio.run(run())
 
+	def testOwnerObjectChannelReceivesDeltas(self):
+		self.objects.release()
+		self.objects = ObjectStorage(JournalBackend(MemoryBackend())).use(
+			WebItem, WebTag, WebOwner, WebMember
+		)
+		owner = WebOwner(name="Alice").save()
+		member = WebMember(value="alpha", owner=owner).save()
+		response, channel = self.requestJSON("POST", "/api/channel")
+		self.assertEqual(response.status, 200)
+
+		async def run():
+			async def post_json(path, data):
+				request = AWSLambdaEvent.AsRequest(
+					AWSLambdaEvent.Create(
+						"POST",
+						path,
+						body=json.dumps(data),
+						headers={"Content-Type": "application/json"},
+					)
+				)
+				response = self.app.process(request)
+				if not isinstance(response, HTTPResponse):
+					response = await response
+				return response
+
+			request = AWSLambdaEvent.AsRequest(
+				AWSLambdaEvent.Create("GET", f"/api/channel/{channel['id']}/events")
+			)
+			response = self.app.process(request)
+			if not isinstance(response, HTTPResponse):
+				response = await response
+			self.assertEqual(response.status, 200)
+			stream = response.body.stream
+			try:
+				ready = await anext(stream)
+				self.assertIn("event: ready", ready)
+				await post_json(
+					f"/api/channel/{channel['id']}/commands",
+					{
+						"commands": [
+							{
+								"op": "subscribe",
+								"target": {
+									"kind": "object",
+									"type": "members",
+									"id": member.id,
+									"owner": owner.id,
+								},
+							}
+						]
+					},
+				)
+				member.value = "beta"
+				member.save()
+				updated = await asyncio.wait_for(anext(stream), timeout=1)
+				self.assertIn("event: update", updated)
+				self.assertIn('"value":"beta"', updated)
+			finally:
+				await stream.aclose()
+
+		asyncio.run(run())
+
 	def testCreateCommandRootIdWinsOverFieldsId(self):
 		response, payload = self.requestJSON(
 			"POST",

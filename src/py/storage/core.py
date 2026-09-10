@@ -236,6 +236,7 @@ class Operation(Enum):
 	REMOVE = "-"
 	UPDATE = "+"
 	SAVE_RAW = "+R"
+	RELATION = "relation"
 
 
 # -----------------------------------------------------------------------------
